@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+*.bak
+*.sqlite3
+*.db
+.env
+.DS_Store
+Veh Mx Tracker Exports/
+*.zip
+*.tar
+*.tar.gz

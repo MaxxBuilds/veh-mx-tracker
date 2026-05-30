@@ -1,4 +1,7 @@
 __pycache__/
+build/
+dist/
+.venv-windows/
 *.pyc
 *.pyo
 *.log

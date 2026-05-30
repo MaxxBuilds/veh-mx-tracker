@@ -28,7 +28,7 @@ All saved records are stored locally on the computer. Saved NHTSA information fo
 - Show total labor hours, labor value, direct costs, and grand total for the full profile.
 - Show totals for a selected vehicle.
 - Filter totals and exports by optional date range.
-- Export one clear clear `.txt` report.
+- Export one clear `.txt` report.
 - Dashboard tab for due/overdue service, highest-cost vehicles, cost by category, most-used parts, and recurring issue trends.
 - Backup tab for one-click database backup and restore.
 - Quick Guide button for self-explanatory in-app instructions.
@@ -158,7 +158,7 @@ Use **Edit Selected Note** or **Delete Selected Note** to manage saved notes.
 
 1. Select a saved vehicle.
 2. Open the **Vehicle MX** tab.
-3. Click **Add MX Record**.
+3. Click **Add Maintenance Record**.
 4. Enter any known fields, such as service date, mileage, hours, category, description, parts, vendor/source, cost, labor hours, and next due date.
 5. Click OK.
 
@@ -177,7 +177,7 @@ The app shows all recorded parts for that selected vehicle, including dates, ven
 Use **Other Work** for shop/fleet/mechanic work that is not tied to one vehicle.
 
 1. Open the **Other Work** tab.
-2. Click **Add Other Work**.
+2. Click **Add Unlinked Work**.
 3. Enter any known details.
 4. Click OK.
 
@@ -244,7 +244,7 @@ The report shows both profile-wide totals and selected-vehicle totals when a veh
 
 Click **Export TXT**.
 
-You can enter an optional date range, then choose where to save the report. The folder chooser defaults to `~/Desktop/MaxxBuilds/veh-mx-tracker/veh-mx-exports`, but you can pick any folder.
+You can enter an optional date range, then choose where to save the report. The folder chooser defaults to `~/Desktop/MaxxBuilds/veh-mx-tracker/veh-mx-exports` in this local checkout, but you can pick any folder.
 
 The app creates one clear `.txt` report sorted by vehicle. The report includes:
 

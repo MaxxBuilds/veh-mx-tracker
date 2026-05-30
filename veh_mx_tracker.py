@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import csv
 import json
 import re
 import sqlite3
@@ -26,7 +25,6 @@ NHTSA_BASE = "https://vpic.nhtsa.dot.gov/api/vehicles"
 NHTSA_RECALL_BASE = "https://api.nhtsa.gov/recalls/recallsByVehicle"
 NHTSA_COMPLAINT_BASE = "https://api.nhtsa.gov/complaints/complaintsByVehicle"
 NHTSA_PRODUCTS_BASE = "https://api.nhtsa.gov/products/vehicle"
-MAX_VEHICLES = None
 VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
 TRANSLITERATION = {**{str(i): i for i in range(10)}, "A":1,"B":2,"C":3,"D":4,"E":5,"F":6,"G":7,"H":8,"J":1,"K":2,"L":3,"M":4,"N":5,"P":7,"R":9,"S":2,"T":3,"U":4,"V":5,"W":6,"X":7,"Y":8,"Z":9}
 WEIGHTS = [8,7,6,5,4,3,2,10,0,9,8,7,6,5,4,3,2]
@@ -202,9 +200,6 @@ class Store:
             cur.executemany("INSERT INTO links(title,url,sort_order,user_added) VALUES(?,?,?,0)", [(t,u,i) for i,(t,u) in enumerate(DEFAULT_LINKS)])
         self.db.commit()
 
-    def vehicle_count(self) -> int:
-        return self.db.execute("SELECT COUNT(*) FROM vehicles").fetchone()[0]
-
     def vehicles(self):
         return self.db.execute("SELECT * FROM vehicles ORDER BY COALESCE(NULLIF(nickname,''), make||' '||model||' '||vin)").fetchall()
 
@@ -247,16 +242,6 @@ class Store:
 
     def update_nickname(self, vid: int, nickname: str):
         self.db.execute("UPDATE vehicles SET nickname=?, updated_at=? WHERE id=?", (nickname, nowstamp(), vid)); self.db.commit()
-
-    def update_vehicle_vin(self, vid: int, vin: str, decoded: dict[str, str]):
-        vals = {
-            "year": decoded.get("ModelYear", ""), "make": decoded.get("Make", ""), "model": decoded.get("Model", ""),
-            "trim": decoded.get("Trim", ""), "engine": decoded.get("EngineModel") or decoded.get("DisplacementL", ""),
-            "body": decoded.get("BodyClass", ""), "raw_json": json.dumps(decoded, indent=2),
-        }
-        self.db.execute("""UPDATE vehicles SET vin=?, year=?, make=?, model=?, trim=?, engine=?, body=?, raw_json=?, updated_at=? WHERE id=?""",
-            (vin, vals["year"], vals["make"], vals["model"], vals["trim"], vals["engine"], vals["body"], vals["raw_json"], nowstamp(), vid))
-        self.db.commit()
 
     def save_vehicle_public_info(self, vid: int, decoded: dict, recalls: list, complaints: list, tsbs: list):
         cached_at = nowstamp()
@@ -420,9 +405,6 @@ class Store:
     def load_state(self, key: str, default: str = "") -> str:
         row = self.db.execute("SELECT value FROM app_state WHERE key=?", (key,)).fetchone()
         return row["value"] if row else default
-
-    def app_setting(self, key: str, default: str = "") -> str:
-        return self.load_state(key, default)
 
     def app_settings(self) -> dict:
         return {key: self.load_state(key, default) for key, default in DEFAULT_SETTINGS.items()}
@@ -796,7 +778,6 @@ class App:
 
     def collect_app_state(self):
         return {
-            "window_geometry": "fullscreen",
             "selected_vehicle_id": self.selected_vehicle_id or "",
             "vehicle_search": self.vehicle_search_var.get() if hasattr(self, "vehicle_search_var") else "",
             "record_search": self.search_var.get() if hasattr(self, "search_var") else "",
@@ -1191,7 +1172,7 @@ class App:
         ACTIVE_SETTINGS.update(self.settings)
         self.font_size = 9
         self.save_font_size(); self.save_settings()
-        self.store.save_app_state({"window_geometry":"fullscreen", "selected_vehicle_id":"", "vehicle_search":"", "record_search":"", "font_size":"9", "pane_sash_0":"", "pane_sash_1":"", "last_saved_at":nowstamp(), **self.settings})
+        self.store.save_app_state({"selected_vehicle_id":"", "vehicle_search":"", "record_search":"", "font_size":"9", "pane_sash_0":"", "pane_sash_1":"", "last_saved_at":nowstamp(), **self.settings})
         self.refresh_all()
         self.status_var.set("Factory reset complete. All saved info, settings, searches, custom links, and profile info were deleted.")
         messagebox.showinfo(APP_NAME, "Factory reset complete. All saved info and settings have been deleted.")
@@ -1225,9 +1206,6 @@ class App:
             except Exception as e:
                 messagebox.showerror(APP_NAME, str(e))
                 self.status_var.set(f"Error: {e}")
-
-    def add_vin_to_vehicle(self):
-        self.edit_vehicle_info()
 
     def nickname_vehicle(self):
         if not self.selected_vehicle_id: return

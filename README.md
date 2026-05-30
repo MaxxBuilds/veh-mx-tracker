@@ -62,35 +62,39 @@ sudo pacman -Sy --noconfirm curl tar python tk && REPO=veh-mx-tracker && URL=htt
 sudo zypper --non-interactive refresh && sudo zypper --non-interactive install curl tar python3 python3-tk && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
 ```
 
-## Windows x64 install and build
+## Windows x64 install
 
-Windows builds use PyInstaller to package the Python/Tkinter app as one executable with the app icon embedded.
+A Windows `.exe` is built automatically by GitHub Actions. Normal Windows users can use the prebuilt artifact instead of building the app manually.
 
-### Install the Windows artifact
+To install on Windows:
 
 1. Open the repository **Actions** tab.
 2. Open the latest successful **Windows build** run.
 3. Download the `Veh-Mx-Tracker-Windows-x64` artifact.
 4. Extract the ZIP file.
-5. Run `Veh Mx Tracker.exe`, or install shortcuts from the extracted/source folder with PowerShell:
+5. Run `Veh Mx Tracker.exe`.
+
+To install Start Menu and desktop shortcuts, run this from the extracted folder in PowerShell:
 
 ```powershell
 .\install-windows.ps1
 ```
 
-The Windows installer copies the executable to the current user's local Programs folder and creates Start Menu and desktop shortcuts. To skip the desktop shortcut, run:
+To skip the desktop shortcut:
 
 ```powershell
 .\install-windows.ps1 -NoDesktopShortcut
 ```
 
-To remove the installed executable and shortcuts later, run:
+To uninstall the Windows app shortcuts and installed executable later:
 
 ```powershell
 .\install-windows.ps1 -Uninstall
 ```
 
-### Build on Windows
+## Build on Windows from source
+
+Building from source is optional. Use this only if you want to create the `.exe` yourself.
 
 Install Python 3.12 x64 from python.org, then run this from the project folder in PowerShell:
 
@@ -104,7 +108,7 @@ If PowerShell blocks local scripts on your computer, run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build-windows.ps1
 ```
 
-The executable is created at:
+The build output is:
 
 ```text
 dist\Veh Mx Tracker.exe
@@ -115,12 +119,6 @@ You can build and install in one step from the source folder with:
 ```powershell
 .\install-windows.ps1 -Build
 ```
-
-### GitHub Actions build
-
-The repository includes `.github/workflows/windows-build.yml`. The workflow builds `dist\Veh Mx Tracker.exe` on a Windows x64 runner and uploads it as an artifact named `Veh-Mx-Tracker-Windows-x64`.
-
-Run it manually from the repository's **Actions** tab, or let it run when the app or Windows packaging files change.
 
 ## User instructions
 
@@ -411,7 +409,7 @@ veh-mx-tracker
 
 ## Updating from GitHub
 
-On Linux, run the same copy/paste install command again. It downloads the current GitHub source archive, refreshes `~/Desktop/MaxxBuilds/veh-mx-tracker`, and reinstalls the app files. On Windows, download the latest successful Windows build artifact and run `install-windows.ps1` again from the extracted folder. Saved database, settings, and exports live in the app-owned data locations listed above.
+On Linux, run the same copy/paste install command again. It downloads the current GitHub source archive, refreshes `~/Desktop/MaxxBuilds/veh-mx-tracker`, and reinstalls the app files. On Windows, use the latest successful Windows build artifact and run `install-windows.ps1` again if you want shortcuts refreshed. Saved database, settings, and exports live in the app-owned data locations listed above.
 
 ## Uninstall
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -18,9 +19,40 @@ from collections import Counter, defaultdict
 
 APP_NAME = "Veh Mx Tracker"
 APP_ID = "veh-mx-tracker"
-CONFIG_DIR = Path.home() / ".config" / APP_ID
+
+
+def user_config_dir() -> Path:
+    """Return the app-owned config/data directory for this platform.
+
+    Linux keeps the original XDG-style location. Windows uses the standard
+    per-user local app-data folder, with a one-time copy from the older
+    home/.config location if that legacy folder exists.
+    """
+    legacy = Path.home() / ".config" / APP_ID
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            native = Path(base) / APP_ID
+            if legacy.exists() and not native.exists():
+                try:
+                    native.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(legacy, native)
+                except Exception:
+                    return legacy
+            return native
+    return legacy
+
+
+def default_export_dir() -> Path:
+    if os.name == "nt":
+        documents = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents"
+        return documents / "MaxxBuilds" / APP_ID / "veh-mx-exports"
+    return Path.home() / "Desktop" / "MaxxBuilds" / APP_ID / "veh-mx-exports"
+
+
+CONFIG_DIR = user_config_dir()
 DB_PATH = CONFIG_DIR / "vehicles.sqlite3"
-EXPORT_DIR = Path.home() / "Desktop" / "MaxxBuilds" / APP_ID / "veh-mx-exports"
+EXPORT_DIR = default_export_dir()
 NHTSA_BASE = "https://vpic.nhtsa.dot.gov/api/vehicles"
 NHTSA_RECALL_BASE = "https://api.nhtsa.gov/recalls/recallsByVehicle"
 NHTSA_COMPLAINT_BASE = "https://api.nhtsa.gov/complaints/complaintsByVehicle"

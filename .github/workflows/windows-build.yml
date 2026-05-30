@@ -10,6 +10,7 @@ on:
       - "veh-mx-tracker.ico"
       - "Veh Mx Tracker.spec"
       - "build-windows.ps1"
+      - "install-windows.ps1"
       - "requirements-windows-build.txt"
       - "packaging/pyinstaller-hooks/**"
       - ".github/workflows/windows-build.yml"
@@ -19,6 +20,7 @@ on:
       - "veh-mx-tracker.ico"
       - "Veh Mx Tracker.spec"
       - "build-windows.ps1"
+      - "install-windows.ps1"
       - "requirements-windows-build.txt"
       - "packaging/pyinstaller-hooks/**"
       - ".github/workflows/windows-build.yml"
@@ -53,5 +55,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Veh-Mx-Tracker-Windows-x64
-          path: dist/Veh Mx Tracker.exe
+          path: |
+            dist/Veh Mx Tracker.exe
+            install-windows.ps1
           if-no-files-found: error

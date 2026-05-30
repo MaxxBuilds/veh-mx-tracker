@@ -41,30 +41,54 @@ These commands install dependencies, download the current GitHub source archive,
 ### Linux Mint / Ubuntu / Debian
 
 ```bash
-sudo apt update && sudo apt install -y curl tar python3 python3-tk && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && rm -rf "$DEST/.git" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/.git" "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
+sudo apt update && sudo apt install -y curl tar python3 python3-tk && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
 ```
 
 ### Fedora
 
 ```bash
-sudo dnf install -y curl tar python3 python3-tkinter && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && rm -rf "$DEST/.git" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/.git" "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
+sudo dnf install -y curl tar python3 python3-tkinter && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
 ```
 
 ### Arch Linux / Manjaro
 
 ```bash
-sudo pacman -Sy --noconfirm curl tar python tk && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && rm -rf "$DEST/.git" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/.git" "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
+sudo pacman -Sy --noconfirm curl tar python tk && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
 ```
 
 ### openSUSE
 
 ```bash
-sudo zypper --non-interactive refresh && sudo zypper --non-interactive install curl tar python3 python3-tk && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && rm -rf "$DEST/.git" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/.git" "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
+sudo zypper --non-interactive refresh && sudo zypper --non-interactive install curl tar python3 python3-tk && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
 ```
 
-## Windows x64 build
+## Windows x64 install and build
 
 Windows builds use PyInstaller to package the Python/Tkinter app as one executable with the app icon embedded.
+
+### Install the Windows artifact
+
+1. Open the repository **Actions** tab.
+2. Open the latest successful **Windows build** run.
+3. Download the `Veh-Mx-Tracker-Windows-x64` artifact.
+4. Extract the ZIP file.
+5. Run `Veh Mx Tracker.exe`, or install shortcuts from the extracted/source folder with PowerShell:
+
+```powershell
+.\install-windows.ps1
+```
+
+The Windows installer copies the executable to the current user's local Programs folder and creates Start Menu and desktop shortcuts. To skip the desktop shortcut, run:
+
+```powershell
+.\install-windows.ps1 -NoDesktopShortcut
+```
+
+To remove the installed executable and shortcuts later, run:
+
+```powershell
+.\install-windows.ps1 -Uninstall
+```
 
 ### Build on Windows
 
@@ -84,6 +108,12 @@ The executable is created at:
 
 ```text
 dist\Veh Mx Tracker.exe
+```
+
+You can build and install in one step from the source folder with:
+
+```powershell
+.\install-windows.ps1 -Build
 ```
 
 ### GitHub Actions build
@@ -308,16 +338,27 @@ Clear-all deletes:
 
 ## Data storage
 
-Saved data is stored locally at:
+Saved data is stored locally in the current user's app-owned data folder.
+
+Linux:
 
 ```text
 ~/.config/veh-mx-tracker/vehicles.sqlite3
 ```
 
+Windows:
+
+```text
+%LOCALAPPDATA%\veh-mx-tracker\vehicles.sqlite3
+```
+
+On Windows, if an older `%USERPROFILE%\.config\veh-mx-tracker` folder exists and the native app-data folder has not been created yet, the app copies the older data into the native app-data folder on startup.
+
 Exports default to:
 
 ```text
-~/Desktop/MaxxBuilds/veh-mx-tracker/veh-mx-exports
+Linux:   ~/Desktop/MaxxBuilds/veh-mx-tracker/veh-mx-exports
+Windows: %USERPROFILE%\Documents\MaxxBuilds\veh-mx-tracker\veh-mx-exports
 ```
 
 The user can still choose a different folder each time they export.
@@ -370,17 +411,27 @@ veh-mx-tracker
 
 ## Updating from GitHub
 
-Run the same copy/paste install command again. It downloads the current GitHub source archive, refreshes `~/Desktop/MaxxBuilds/veh-mx-tracker`, and reinstalls the app files. Saved database, settings, and exports live in the app-owned data locations listed above.
+On Linux, run the same copy/paste install command again. It downloads the current GitHub source archive, refreshes `~/Desktop/MaxxBuilds/veh-mx-tracker`, and reinstalls the app files. On Windows, download the latest successful Windows build artifact and run `install-windows.ps1` again from the extracted folder. Saved database, settings, and exports live in the app-owned data locations listed above.
 
 ## Uninstall
+
+Linux:
 
 ```bash
 ./uninstall.sh
 ```
 
-Uninstall removes the installed app files, launchers, icons, and saved app database/settings. If exports exist, uninstall copies them to a desktop folder named `Old Veh Mx Tracker Exports` before removing app-created data. Exports are copied to that desktop folder during uninstall.
+Windows:
+
+```powershell
+.\install-windows.ps1 -Uninstall
+```
+
+Linux uninstall removes the installed app files, launchers, icons, and saved app database/settings. If exports exist, uninstall copies them to a desktop folder named `Old Veh Mx Tracker Exports` before removing app-created data. Windows uninstall removes the installed executable and shortcuts. Saved Windows app data remains in `%LOCALAPPDATA%\veh-mx-tracker`.
 
 ## Installed files
+
+Linux:
 
 ```text
 ~/.local/share/veh-mx-tracker/veh_mx_tracker.py
@@ -388,6 +439,14 @@ Uninstall removes the installed app files, launchers, icons, and saved app datab
 ~/.local/share/applications/veh-mx-tracker.desktop
 ~/.local/share/icons/veh-mx-tracker.png
 ~/Desktop/Veh Mx Tracker.desktop
+```
+
+Windows:
+
+```text
+%LOCALAPPDATA%\Programs\Veh Mx Tracker\Veh Mx Tracker.exe
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Veh Mx Tracker.lnk
+%USERPROFILE%\Desktop\Veh Mx Tracker.lnk
 ```
 
 ## Project files
@@ -400,6 +459,7 @@ uninstall.sh           Full uninstaller wrapper
 veh-mx-tracker.png     App icon
 veh-mx-tracker.ico     Windows app icon
 build-windows.ps1      Windows x64 build script
+install-windows.ps1    Windows current-user installer/uninstaller
 Veh Mx Tracker.spec    PyInstaller build spec
 ```
 

@@ -1,0 +1,57 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "veh_mx_tracker.py"
+      - "veh-mx-tracker.ico"
+      - "Veh Mx Tracker.spec"
+      - "build-windows.ps1"
+      - "requirements-windows-build.txt"
+      - "packaging/pyinstaller-hooks/**"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "veh_mx_tracker.py"
+      - "veh-mx-tracker.ico"
+      - "Veh Mx Tracker.spec"
+      - "build-windows.ps1"
+      - "requirements-windows-build.txt"
+      - "packaging/pyinstaller-hooks/**"
+      - ".github/workflows/windows-build.yml"
+
+jobs:
+  build-windows-x64:
+    name: Build Windows x64 executable
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: "pip"
+          cache-dependency-path: requirements-windows-build.txt
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-windows-build.txt
+
+      - name: Build executable
+        shell: pwsh
+        run: ./build-windows.ps1
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Veh-Mx-Tracker-Windows-x64
+          path: dist/Veh Mx Tracker.exe
+          if-no-files-found: error

@@ -1,6 +1,6 @@
 # Veh Mx Tracker
 
-Veh Mx Tracker is a Linux desktop app for tracking vehicle maintenance, parts, suppliers, shop work, labor hours, and costs. It works with vehicles that have a VIN and vehicles that only have a reg number.
+Veh Mx Tracker is a desktop app for tracking vehicle maintenance, parts, suppliers, shop work, labor hours, and costs. It runs on Linux from source and can be packaged as a Windows x64 executable. It works with vehicles that have a VIN and vehicles that only have a reg number.
 
 All saved records are stored locally on the computer. Saved NHTSA information for each vehicle is cached locally after it is fetched, including decoded vehicle info, recalls, complaints, and available TSB model matches. Selected vehicles can show their last saved NHTSA report offline, and when internet is available the app refreshes and re-saves the NHTSA info after the vehicle is selected.
 
@@ -61,6 +61,36 @@ sudo pacman -Sy --noconfirm curl tar python tk && REPO=veh-mx-tracker && URL=htt
 ```bash
 sudo zypper --non-interactive refresh && sudo zypper --non-interactive install curl tar python3 python3-tk && REPO=veh-mx-tracker && URL=https://github.com/MaxxBuilds/veh-mx-tracker/archive/refs/heads/main.tar.gz && BASE="$HOME/Desktop/MaxxBuilds" && DEST="$BASE/$REPO" && TMP="$(mktemp -d)" && mkdir -p "$BASE" "$DEST" && curl -L "$URL" -o "$TMP/app.tar.gz" && tar -xzf "$TMP/app.tar.gz" -C "$TMP" && SRC="$TMP/veh-mx-tracker-main" && rm -rf "$DEST/.git" && cp -a "$SRC"/. "$DEST"/ && rm -rf "$DEST/.git" "$DEST/__pycache__" && chmod +x "$DEST/install.sh" && "$DEST/install.sh" && rm -rf "$TMP"
 ```
+
+## Windows x64 build
+
+Windows builds use PyInstaller to package the Python/Tkinter app as one executable with the app icon embedded.
+
+### Build on Windows
+
+Install Python 3.12 x64 from python.org, then run this from the project folder in PowerShell:
+
+```powershell
+.\build-windows.ps1
+```
+
+If PowerShell blocks local scripts on your computer, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-windows.ps1
+```
+
+The executable is created at:
+
+```text
+dist\Veh Mx Tracker.exe
+```
+
+### GitHub Actions build
+
+The repository includes `.github/workflows/windows-build.yml`. The workflow builds `dist\Veh Mx Tracker.exe` on a Windows x64 runner and uploads it as an artifact named `Veh-Mx-Tracker-Windows-x64`.
+
+Run it manually from the repository's **Actions** tab, or let it run when the app or Windows packaging files change.
 
 ## User instructions
 
@@ -368,6 +398,9 @@ README.md              User instructions and project info
 install.sh             Current-user installer/updater
 uninstall.sh           Full uninstaller wrapper
 veh-mx-tracker.png     App icon
+veh-mx-tracker.ico     Windows app icon
+build-windows.ps1      Windows x64 build script
+Veh Mx Tracker.spec    PyInstaller build spec
 ```
 
 ## License

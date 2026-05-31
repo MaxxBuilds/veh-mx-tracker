@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
@@ -98,6 +99,109 @@ def nowstamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+MONTHS = {m: i for i, m in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+MONTH_ALIASES = {m.lower(): m for m in MONTHS}
+STRICT_DATE_RE = re.compile(r"^(\d{2})\s+([A-Za-z]{3})\s+(\d{4})$")
+DATE_INPUT_KEYS = {"service_date", "service_start_date", "service_end_date", "work_date", "next_due", "date_ordered", "start", "end"}
+DATE_INPUT_LABELS = {
+    "service_date": "Service date",
+    "service_start_date": "Service start date",
+    "service_end_date": "Service end date",
+    "work_date": "Work date",
+    "next_due": "Next due",
+    "date_ordered": "Date ordered",
+    "start": "Start date",
+    "end": "End date",
+}
+
+
+def normalize_date_input(value: str, label: str = "Date", required: bool = True) -> str:
+    text = str(value or "").strip()
+    if not text:
+        if required:
+            raise ValueError(f"{label} is required and must use DD MMM YYYY format, for example 30 May 2026.")
+        return ""
+    match = STRICT_DATE_RE.fullmatch(text)
+    if not match:
+        raise ValueError(f"{label} must use DD MMM YYYY format, for example 30 May 2026. Other formats such as YYYY-MM-DD are rejected.")
+    day_text, month_text, year_text = match.groups()
+    month = MONTH_ALIASES.get(month_text.lower())
+    if not month:
+        raise ValueError(f"{label} must use a three-letter English month abbreviation, for example 30 May 2026.")
+    try:
+        parsed = datetime(int(year_text), MONTHS[month], int(day_text))
+    except ValueError as exc:
+        raise ValueError(f"{label} is not a real calendar date: {text}.") from exc
+    return parsed.strftime("%d %b %Y")
+
+
+def normalize_optional_date(value: str, label: str = "Date") -> str:
+    return normalize_date_input(value, label, required=False)
+
+
+def migrate_date_text(value: str, required: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for fmt in ("%d %b %Y", "%Y-%m-%d", "%Y-%m-%d %H:%M", "%m/%d/%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(text[:16] if fmt == "%Y-%m-%d %H:%M" else text[:10] if fmt == "%Y-%m-%d" else text, fmt).strftime("%d %b %Y")
+        except ValueError:
+            pass
+    return normalize_date_input(text, "Date", required=required)
+
+
+def date_sort_key(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return datetime.strptime(migrate_date_text(text), "%d %b %Y").strftime("%Y-%m-%d")
+    except Exception:
+        return text
+
+
+def today_date() -> str:
+    return datetime.now().strftime("%d %b %Y")
+
+
+def normalize_url_text(url: str) -> str:
+    url = (url or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
+def dashboard_part_names(parts_text: str):
+    """Yield real part/material names from the free-form maintenance parts field.
+
+    Demo records may include itemized pricing plus summary text such as
+    "Parts/materials subtotal" and "Labor reference". The dashboard's
+    Most Used Parts list should count only actual parts/materials, not those
+    accounting summary lines.
+    """
+    for raw_item in re.split(r"[;\n]+", parts_text or ""):
+        item = raw_item.strip()
+        if not item:
+            continue
+        lowered = item.lower()
+        if lowered.startswith((
+            "parts/materials subtotal",
+            "parts subtotal",
+            "materials subtotal",
+            "labor reference",
+        )):
+            continue
+        if re.fullmatch(r"(?:hr|hrs|hours?)\s*=\s*\$?[\d,.]+", lowered):
+            continue
+        if re.search(r"@\s*\$0(?:\.00)?\s*=\s*\$0(?:\.00)?", item, flags=re.IGNORECASE):
+            continue
+        item = re.sub(r"\s+x\d+(?:\.\d+)?\s*@\s*\$[\d,.]+\s*=\s*\$[\d,.]+.*$", "", item, flags=re.IGNORECASE).strip()
+        item = re.sub(r"\s*@\s*\$[\d,.]+(?:\s*=\s*\$[\d,.]+)?\s*$", "", item, flags=re.IGNORECASE).strip()
+        if item and item.lower() not in {"parts", "labor", "labor reference"}:
+            yield item
+
+
 def http_json(url: str, timeout: int = 20) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/1.0"})
     try:
@@ -177,6 +281,7 @@ class Store:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(DB_PATH)
         self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA foreign_keys=ON")
         self.init_db()
 
     def init_db(self):
@@ -196,9 +301,23 @@ class Store:
         );
         CREATE TABLE IF NOT EXISTS maintenance (
           id INTEGER PRIMARY KEY, vehicle_id INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, service_date TEXT NOT NULL,
+          service_start_date TEXT DEFAULT '', service_end_date TEXT DEFAULT '',
           mileage TEXT DEFAULT '', hours TEXT DEFAULT '', category TEXT DEFAULT '', description TEXT NOT NULL,
-          parts TEXT DEFAULT '', vendor TEXT DEFAULT '', cost REAL DEFAULT 0, labor_hours REAL DEFAULT 0, next_due TEXT DEFAULT '',
+          next_due TEXT DEFAULT '',
           FOREIGN KEY(vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS technicians (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL, rank TEXT DEFAULT '', labor_rate REAL DEFAULT 0, active INTEGER DEFAULT 1,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS maintenance_parts (
+          id INTEGER PRIMARY KEY, maintenance_id INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          part_name TEXT NOT NULL, part_number TEXT DEFAULT '', supplier TEXT DEFAULT '', date_ordered TEXT DEFAULT '',
+          quantity REAL DEFAULT 1, unit_cost REAL DEFAULT 0, total_cost REAL DEFAULT 0,
+          technician_id INTEGER, technician_name TEXT DEFAULT '', technician_rank TEXT DEFAULT '', technician_labor_rate REAL DEFAULT 0,
+          labor_hours REAL DEFAULT 0, labor_value REAL DEFAULT 0, notes TEXT DEFAULT '',
+          FOREIGN KEY(maintenance_id) REFERENCES maintenance(id) ON DELETE CASCADE,
+          FOREIGN KEY(technician_id) REFERENCES technicians(id) ON DELETE SET NULL
         );
         CREATE TABLE IF NOT EXISTS work_items (
           id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, work_date TEXT NOT NULL,
@@ -227,7 +346,135 @@ class Store:
         if "updated_at" not in cols:
             cur.execute("ALTER TABLE maintenance ADD COLUMN updated_at TEXT DEFAULT ''")
             cur.execute("UPDATE maintenance SET updated_at=created_at WHERE updated_at='' OR updated_at IS NULL")
+        if "service_start_date" not in cols:
+            cur.execute("ALTER TABLE maintenance ADD COLUMN service_start_date TEXT DEFAULT ''")
+        if "service_end_date" not in cols:
+            cur.execute("ALTER TABLE maintenance ADD COLUMN service_end_date TEXT DEFAULT ''")
+        for row in cur.execute("SELECT id, service_date, service_start_date, service_end_date, next_due FROM maintenance").fetchall():
+            start = migrate_date_text(row["service_start_date"] or row["service_date"], required=True)
+            end = migrate_date_text(row["service_end_date"], required=False)
+            due = migrate_date_text(row["next_due"], required=False)
+            cur.execute("UPDATE maintenance SET service_date=?, service_start_date=?, service_end_date=?, next_due=? WHERE id=?", (start, start, end, due, row["id"]))
         cur.execute("INSERT OR IGNORE INTO profile(id,name,rank,labor_cost,updated_at) VALUES(1,'','',0,'')")
+        cur.execute("""CREATE TABLE IF NOT EXISTS technicians (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL, rank TEXT DEFAULT '', labor_rate REAL DEFAULT 0, active INTEGER DEFAULT 1,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )""")
+        ts = nowstamp()
+        if cur.execute("SELECT COUNT(*) FROM technicians").fetchone()[0] == 0:
+            prof = cur.execute("SELECT * FROM profile WHERE id=1").fetchone()
+            name = str((prof["name"] if prof else "") or "").strip() or "Default Technician"
+            rank = str((prof["rank"] if prof else "") or "").strip()
+            try:
+                rate = float((prof["labor_cost"] if prof else 0) or 0)
+            except (TypeError, ValueError):
+                rate = 0.0
+            cur.execute("INSERT INTO technicians(name,rank,labor_rate,active,created_at,updated_at) VALUES(?,?,?,?,?,?)", (name, rank, rate, 1, ts, ts))
+            cur.execute("INSERT OR REPLACE INTO app_state(key,value) VALUES('default_technician_id', ?)", (str(cur.lastrowid),))
+        default_tech = cur.execute("SELECT * FROM technicians ORDER BY active DESC,id LIMIT 1").fetchone()
+        default_tech_id = default_tech["id"] if default_tech else None
+        default_name = default_tech["name"] if default_tech else "Default Technician"
+        default_rank = default_tech["rank"] if default_tech else ""
+        default_rate = float(default_tech["labor_rate"] if default_tech else 0)
+        part_cols = {r[1] for r in cur.execute("PRAGMA table_info(maintenance_parts)").fetchall()}
+        for col, ddl in [
+            ("technician_id", "ALTER TABLE maintenance_parts ADD COLUMN technician_id INTEGER"),
+            ("technician_name", "ALTER TABLE maintenance_parts ADD COLUMN technician_name TEXT DEFAULT ''"),
+            ("technician_rank", "ALTER TABLE maintenance_parts ADD COLUMN technician_rank TEXT DEFAULT ''"),
+            ("technician_labor_rate", "ALTER TABLE maintenance_parts ADD COLUMN technician_labor_rate REAL DEFAULT 0"),
+            ("labor_hours", "ALTER TABLE maintenance_parts ADD COLUMN labor_hours REAL DEFAULT 0"),
+            ("labor_value", "ALTER TABLE maintenance_parts ADD COLUMN labor_value REAL DEFAULT 0"),
+        ]:
+            if col not in part_cols:
+                cur.execute(ddl)
+        cur.execute("""UPDATE maintenance_parts
+                       SET technician_id=COALESCE(technician_id, ?),
+                           technician_name=CASE WHEN technician_name IS NULL OR technician_name='' THEN ? ELSE technician_name END,
+                           technician_rank=CASE WHEN technician_rank IS NULL OR technician_rank='' THEN ? ELSE technician_rank END,
+                           technician_labor_rate=CASE WHEN technician_labor_rate IS NULL OR technician_labor_rate=0 THEN ? ELSE technician_labor_rate END,
+                           labor_hours=COALESCE(labor_hours, 0),
+                           labor_value=ROUND(COALESCE(labor_hours,0) * COALESCE(technician_labor_rate,0), 2)
+                       WHERE technician_id IS NULL OR technician_name='' OR labor_value IS NULL""", (default_tech_id, default_name, default_rank, default_rate))
+        cols = {r[1] for r in cur.execute("PRAGMA table_info(maintenance)").fetchall()}
+        if "labor_hours" in cols:
+            for row in cur.execute("SELECT id, service_date, service_start_date, labor_hours FROM maintenance WHERE COALESCE(labor_hours,0) > 0").fetchall():
+                exists = cur.execute("SELECT 1 FROM maintenance_parts WHERE maintenance_id=? AND part_name='Legacy labor' AND notes='Migrated from parent maintenance labor hours.'", (row["id"],)).fetchone()
+                if exists:
+                    continue
+                labor_hours = float(row["labor_hours"] or 0)
+                labor_value = round(labor_hours * default_rate, 2)
+                cur.execute("""INSERT INTO maintenance_parts(maintenance_id,created_at,updated_at,part_name,part_number,supplier,date_ordered,quantity,unit_cost,total_cost,technician_id,technician_name,technician_rank,technician_labor_rate,labor_hours,labor_value,notes)
+                               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (row["id"], ts, ts, "Legacy labor", "", "", row["service_start_date"] or row["service_date"], 1, 0, 0, default_tech_id, default_name, default_rank, default_rate, labor_hours, labor_value, "Migrated from parent maintenance labor hours."))
+        cols = {r[1] for r in cur.execute("PRAGMA table_info(maintenance)").fetchall()}
+        if "parts" in cols or "cost" in cols or "vendor" in cols:
+            select_fields = ["id", "service_date", "service_start_date"]
+            select_fields.append("parts" if "parts" in cols else "'' AS parts")
+            select_fields.append("vendor" if "vendor" in cols else "'' AS vendor")
+            select_fields.append("cost" if "cost" in cols else "0 AS cost")
+            for row in cur.execute(f"SELECT {', '.join(select_fields)} FROM maintenance").fetchall():
+                parts_text = str(row["parts"] or "").strip()
+                supplier = str(row["vendor"] or "").strip()
+                try:
+                    cost = float(row["cost"] or 0)
+                except (TypeError, ValueError):
+                    cost = 0.0
+                if not parts_text and not supplier and cost <= 0:
+                    continue
+                exists = cur.execute("""SELECT 1 FROM maintenance_parts
+                                      WHERE maintenance_id=? AND notes LIKE 'Migrated from parent maintenance parts/cost/vendor.%'""", (row["id"],)).fetchone()
+                if exists:
+                    continue
+                migrated_names = list(dashboard_part_names(parts_text))
+                part_name = migrated_names[0] if migrated_names else (parts_text[:120] if parts_text else "Legacy parts/materials")
+                notes = "Migrated from parent maintenance parts/cost/vendor."
+                if parts_text:
+                    notes += f" Original parts: {parts_text}"
+                total_cost = round(cost, 2) if cost > 0 else 0.0
+                cur.execute("""INSERT INTO maintenance_parts(maintenance_id,created_at,updated_at,part_name,part_number,supplier,date_ordered,quantity,unit_cost,total_cost,technician_id,technician_name,technician_rank,technician_labor_rate,labor_hours,labor_value,notes)
+                               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (row["id"], ts, ts, part_name, "", supplier, row["service_start_date"] or row["service_date"], 1, total_cost, total_cost, default_tech_id, default_name, default_rank, default_rate, 0, 0, notes))
+        if "parts" in cols or "cost" in cols or "vendor" in cols or "labor_hours" in cols:
+            cur.execute("CREATE TEMP TABLE IF NOT EXISTS maintenance_parts_keep AS SELECT * FROM maintenance_parts")
+            cur.execute("ALTER TABLE maintenance RENAME TO maintenance_old")
+            cur.execute("""CREATE TABLE maintenance (
+              id INTEGER PRIMARY KEY, vehicle_id INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, service_date TEXT NOT NULL,
+              service_start_date TEXT DEFAULT '', service_end_date TEXT DEFAULT '',
+              mileage TEXT DEFAULT '', hours TEXT DEFAULT '', category TEXT DEFAULT '', description TEXT NOT NULL,
+              next_due TEXT DEFAULT '',
+              FOREIGN KEY(vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+            )""")
+            cur.execute("""INSERT INTO maintenance(id,vehicle_id,created_at,updated_at,service_date,service_start_date,service_end_date,mileage,hours,category,description,next_due)
+                           SELECT id,vehicle_id,created_at,updated_at,service_date,service_start_date,service_end_date,mileage,hours,category,description,next_due FROM maintenance_old""")
+            cur.execute("DROP TABLE maintenance_old")
+        fk_targets = {r[2] for r in cur.execute("PRAGMA foreign_key_list(maintenance_parts)").fetchall()}
+        if fk_targets and "maintenance" not in fk_targets:
+            cur.execute("ALTER TABLE maintenance_parts RENAME TO maintenance_parts_old")
+            cur.execute("""CREATE TABLE maintenance_parts (
+              id INTEGER PRIMARY KEY, maintenance_id INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+              part_name TEXT NOT NULL, part_number TEXT DEFAULT '', supplier TEXT DEFAULT '', date_ordered TEXT DEFAULT '',
+              quantity REAL DEFAULT 1, unit_cost REAL DEFAULT 0, total_cost REAL DEFAULT 0,
+              technician_id INTEGER, technician_name TEXT DEFAULT '', technician_rank TEXT DEFAULT '', technician_labor_rate REAL DEFAULT 0,
+              labor_hours REAL DEFAULT 0, labor_value REAL DEFAULT 0, notes TEXT DEFAULT '',
+              FOREIGN KEY(maintenance_id) REFERENCES maintenance(id) ON DELETE CASCADE,
+              FOREIGN KEY(technician_id) REFERENCES technicians(id) ON DELETE SET NULL
+            )""")
+            cur.execute("""INSERT OR IGNORE INTO maintenance_parts(id,maintenance_id,created_at,updated_at,part_name,part_number,supplier,date_ordered,quantity,unit_cost,total_cost,technician_id,technician_name,technician_rank,technician_labor_rate,labor_hours,labor_value,notes)
+                           SELECT id,maintenance_id,created_at,updated_at,part_name,part_number,supplier,date_ordered,quantity,unit_cost,total_cost,technician_id,technician_name,technician_rank,technician_labor_rate,labor_hours,labor_value,notes FROM maintenance_parts_old
+                           WHERE maintenance_id IN (SELECT id FROM maintenance)""")
+            cur.execute("DROP TABLE maintenance_parts_old")
+        if cur.execute("SELECT name FROM sqlite_temp_master WHERE type='table' AND name='maintenance_parts_keep'").fetchone():
+            if cur.execute("SELECT COUNT(*) FROM maintenance_parts").fetchone()[0] == 0:
+                cur.execute("""INSERT OR IGNORE INTO maintenance_parts(id,maintenance_id,created_at,updated_at,part_name,part_number,supplier,date_ordered,quantity,unit_cost,total_cost,technician_id,technician_name,technician_rank,technician_labor_rate,labor_hours,labor_value,notes)
+                               SELECT id,maintenance_id,created_at,updated_at,part_name,part_number,supplier,date_ordered,quantity,unit_cost,total_cost,technician_id,technician_name,technician_rank,technician_labor_rate,labor_hours,labor_value,notes FROM maintenance_parts_keep
+                               WHERE maintenance_id IN (SELECT id FROM maintenance)""")
+            cur.execute("DROP TABLE maintenance_parts_keep")
+        for row in cur.execute("SELECT id, date_ordered FROM maintenance_parts").fetchall():
+            ordered = migrate_date_text(row["date_ordered"], required=False)
+            if ordered != (row["date_ordered"] or ""):
+                cur.execute("UPDATE maintenance_parts SET date_ordered=? WHERE id=?", (ordered, row["id"]))
+        for row in cur.execute("SELECT id, work_date FROM work_items").fetchall():
+            work_date = migrate_date_text(row["work_date"], required=True)
+            if work_date != (row["work_date"] or ""):
+                cur.execute("UPDATE work_items SET work_date=? WHERE id=?", (work_date, row["id"]))
         if cur.execute("SELECT COUNT(*) FROM links").fetchone()[0] == 0:
             cur.executemany("INSERT INTO links(title,url,sort_order,user_added) VALUES(?,?,?,0)", [(t,u,i) for i,(t,u) in enumerate(DEFAULT_LINKS)])
         self.db.commit()
@@ -341,33 +588,275 @@ class Store:
     def delete_note(self, nid: int):
         self.db.execute("DELETE FROM notes WHERE id=?", (nid,)); self.db.commit()
 
+    def _mx_values(self, data: dict):
+        start = normalize_date_input(data.get("service_start_date") or data.get("service_date"), "Service start date", required=True)
+        return {
+            "service_start_date": start,
+            "service_end_date": normalize_optional_date(data.get("service_end_date"), "Service end date"),
+            "mileage": data.get("mileage", ""),
+            "hours": data.get("hours", ""),
+            "category": data.get("category", ""),
+            "description": data.get("description", ""),
+            "next_due": normalize_optional_date(data.get("next_due", ""), "Next due"),
+        }
+
     def add_mx(self, vid: int, data: dict):
+        vals = self._mx_values(data)
         ts = nowstamp()
-        self.db.execute("""INSERT INTO maintenance(vehicle_id,created_at,updated_at,service_date,mileage,hours,category,description,parts,vendor,cost,labor_hours,next_due)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (vid, ts, ts, data["service_date"], data["mileage"], data["hours"], data["category"], data["description"], data["parts"], data["vendor"], data["cost"], data["labor_hours"], data["next_due"]))
+        cur = self.db.execute("""INSERT INTO maintenance(vehicle_id,created_at,updated_at,service_date,service_start_date,service_end_date,mileage,hours,category,description,next_due)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (vid, ts, ts, vals["service_start_date"], vals["service_start_date"], vals["service_end_date"], vals["mileage"], vals["hours"], vals["category"], vals["description"], vals["next_due"]))
         self.db.commit()
+        return cur.lastrowid
 
     def update_mx(self, mid: int, data: dict):
-        self.db.execute("""UPDATE maintenance SET updated_at=?, service_date=?, mileage=?, hours=?, category=?, description=?, parts=?, vendor=?, cost=?, labor_hours=?, next_due=? WHERE id=?""",
-            (nowstamp(), data["service_date"], data["mileage"], data["hours"], data["category"], data["description"], data["parts"], data["vendor"], data["cost"], data["labor_hours"], data["next_due"], mid))
+        vals = self._mx_values(data)
+        self.db.execute("""UPDATE maintenance SET updated_at=?, service_date=?, service_start_date=?, service_end_date=?, mileage=?, hours=?, category=?, description=?, next_due=? WHERE id=?""",
+            (nowstamp(), vals["service_start_date"], vals["service_start_date"], vals["service_end_date"], vals["mileage"], vals["hours"], vals["category"], vals["description"], vals["next_due"], mid))
         self.db.commit()
 
     def maintenance(self, vid: int):
-        return self.db.execute("SELECT * FROM maintenance WHERE vehicle_id=? ORDER BY service_date DESC,id DESC", (vid,)).fetchall()
+        rows = self.db.execute("SELECT * FROM maintenance WHERE vehicle_id=?", (vid,)).fetchall()
+        return sorted(rows, key=lambda r: (date_sort_key(r["service_start_date"] or r["service_date"]), r["id"]), reverse=True)
 
     def delete_mx(self, mid: int):
         self.db.execute("DELETE FROM maintenance WHERE id=?", (mid,)); self.db.commit()
 
+    def technicians(self, include_inactive: bool = True):
+        where = "" if include_inactive else " WHERE active=1"
+        return self.db.execute("SELECT * FROM technicians" + where + " ORDER BY active DESC, name COLLATE NOCASE, id").fetchall()
+
+    def get_technician(self, technician_id):
+        try:
+            tid = int(technician_id)
+        except (TypeError, ValueError):
+            return None
+        return self.db.execute("SELECT * FROM technicians WHERE id=?", (tid,)).fetchone()
+
+    def default_technician(self):
+        raw = self.load_state("default_technician_id", "")
+        tech = self.get_technician(raw) if raw else None
+        if tech and int(tech["active"] or 0):
+            return tech
+        return self.db.execute("SELECT * FROM technicians WHERE active=1 ORDER BY id LIMIT 1").fetchone() or self.db.execute("SELECT * FROM technicians ORDER BY id LIMIT 1").fetchone()
+
+    def set_default_technician(self, technician_id: int):
+        tech = self.get_technician(technician_id)
+        if not tech:
+            raise ValueError("Select a valid technician.")
+        self.save_state("default_technician_id", str(tech["id"]))
+
+    def add_technician(self, data: dict):
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Technician name is required.")
+        try:
+            rate = float(data.get("labor_rate") or data.get("labor_cost") or 0)
+        except (TypeError, ValueError):
+            rate = 0.0
+        active = 1 if str(data.get("active", "1")).strip().lower() not in {"0", "no", "false", "inactive"} else 0
+        ts = nowstamp()
+        cur = self.db.execute("INSERT INTO technicians(name,rank,labor_rate,active,created_at,updated_at) VALUES(?,?,?,?,?,?)", (name, str(data.get("rank") or "").strip(), rate, active, ts, ts))
+        self.db.commit()
+        if not self.load_state("default_technician_id", ""):
+            self.set_default_technician(cur.lastrowid)
+        return cur.lastrowid
+
+    def update_technician(self, technician_id: int, data: dict):
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Technician name is required.")
+        try:
+            rate = float(data.get("labor_rate") or data.get("labor_cost") or 0)
+        except (TypeError, ValueError):
+            rate = 0.0
+        active = 1 if str(data.get("active", "1")).strip().lower() not in {"0", "no", "false", "inactive"} else 0
+        self.db.execute("UPDATE technicians SET name=?, rank=?, labor_rate=?, active=?, updated_at=? WHERE id=?", (name, str(data.get("rank") or "").strip(), rate, active, nowstamp(), technician_id))
+        self.db.commit()
+
+    def technician_in_use(self, technician_id: int) -> bool:
+        return bool(self.db.execute("SELECT 1 FROM maintenance_parts WHERE technician_id=? LIMIT 1", (technician_id,)).fetchone())
+
+    def delete_technician(self, technician_id: int):
+        if self.technician_in_use(technician_id):
+            raise ValueError("This technician is used by maintenance parts/labor records. Mark inactive instead.")
+        self.db.execute("DELETE FROM technicians WHERE id=?", (technician_id,))
+        self.db.commit()
+        default = self.default_technician()
+        if default:
+            self.save_state("default_technician_id", str(default["id"]))
+
+    def _part_values(self, data: dict):
+        name = str(data.get("part_name") or "").strip()
+        if not name:
+            raise ValueError("Part name is required.")
+        try:
+            qty = float(data.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        try:
+            unit_cost = float(data.get("unit_cost") or 0)
+        except (TypeError, ValueError):
+            unit_cost = 0.0
+        unit_cost = round(unit_cost, 2)
+        total_cost = round(qty * unit_cost, 2)
+        try:
+            labor_hours = float(data.get("labor_hours") or 0)
+        except (TypeError, ValueError):
+            labor_hours = 0.0
+        tech = self.get_technician(data.get("technician_id")) if data.get("technician_id") else self.default_technician()
+        if tech:
+            technician_id = tech["id"]
+            technician_name = tech["name"]
+            technician_rank = tech["rank"]
+            technician_labor_rate = float(tech["labor_rate"] or 0)
+        else:
+            technician_id = None
+            technician_name = str(data.get("technician_name") or "").strip()
+            technician_rank = str(data.get("technician_rank") or "").strip()
+            try:
+                technician_labor_rate = float(data.get("technician_labor_rate") or 0)
+            except (TypeError, ValueError):
+                technician_labor_rate = 0.0
+        labor_value = round(labor_hours * technician_labor_rate, 2)
+        return {
+            "part_name": name,
+            "part_number": str(data.get("part_number") or "").strip(),
+            "supplier": str(data.get("supplier") or "").strip(),
+            "date_ordered": normalize_optional_date(data.get("date_ordered"), "Date ordered"),
+            "quantity": qty,
+            "unit_cost": unit_cost,
+            "total_cost": total_cost,
+            "technician_id": technician_id,
+            "technician_name": technician_name,
+            "technician_rank": technician_rank,
+            "technician_labor_rate": technician_labor_rate,
+            "labor_hours": labor_hours,
+            "labor_value": labor_value,
+            "notes": str(data.get("notes") or "").strip(),
+        }
+
+    def ensure_supplier_source(self, data: dict):
+        title = str(data.get("supplier") or data.get("title") or "").strip()
+        if not title:
+            return
+        supplier_data = {
+            "title": title,
+            "url": normalize_url_text(data.get("supplier_url", "")),
+            "contact_name": str(data.get("supplier_contact_name") or "").strip(),
+            "contact_title": str(data.get("supplier_contact_title") or "").strip(),
+            "email": str(data.get("supplier_email") or "").strip(),
+            "phone": str(data.get("supplier_phone") or "").strip(),
+            "address": str(data.get("supplier_address") or "").strip(),
+            "notes": str(data.get("supplier_notes") or "").strip(),
+        }
+        existing = self.db.execute("SELECT * FROM links WHERE lower(title)=lower(?)", (title,)).fetchone()
+        has_detail = any(supplier_data[k] for k in ("url", "contact_name", "contact_title", "email", "phone", "address", "notes"))
+        if existing:
+            if has_detail:
+                merged = {k: supplier_data[k] or existing[k] for k in ("title", "url", "contact_name", "contact_title", "email", "phone", "address", "notes")}
+                self.update_link(existing["id"], merged)
+            return
+        self.add_link(supplier_data)
+
+    def add_mx_part(self, maintenance_id: int, data: dict):
+        vals = self._part_values(data)
+        self.ensure_supplier_source(data)
+        ts = nowstamp()
+        cur = self.db.execute("""INSERT INTO maintenance_parts(maintenance_id,created_at,updated_at,part_name,part_number,supplier,date_ordered,quantity,unit_cost,total_cost,technician_id,technician_name,technician_rank,technician_labor_rate,labor_hours,labor_value,notes)
+                                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (maintenance_id, ts, ts, vals["part_name"], vals["part_number"], vals["supplier"], vals["date_ordered"], vals["quantity"], vals["unit_cost"], vals["total_cost"], vals["technician_id"], vals["technician_name"], vals["technician_rank"], vals["technician_labor_rate"], vals["labor_hours"], vals["labor_value"], vals["notes"]))
+        self.db.commit()
+        return cur.lastrowid
+
+    def update_mx_part(self, part_id: int, data: dict):
+        vals = self._part_values(data)
+        self.ensure_supplier_source(data)
+        self.db.execute("""UPDATE maintenance_parts SET updated_at=?, part_name=?, part_number=?, supplier=?, date_ordered=?, quantity=?, unit_cost=?, total_cost=?, technician_id=?, technician_name=?, technician_rank=?, technician_labor_rate=?, labor_hours=?, labor_value=?, notes=? WHERE id=?""",
+            (nowstamp(), vals["part_name"], vals["part_number"], vals["supplier"], vals["date_ordered"], vals["quantity"], vals["unit_cost"], vals["total_cost"], vals["technician_id"], vals["technician_name"], vals["technician_rank"], vals["technician_labor_rate"], vals["labor_hours"], vals["labor_value"], vals["notes"], part_id))
+        self.db.commit()
+
+    def delete_mx_part(self, part_id: int):
+        self.db.execute("DELETE FROM maintenance_parts WHERE id=?", (part_id,)); self.db.commit()
+
+    def replace_mx_parts(self, maintenance_id: int, parts: list[dict]):
+        self.db.execute("DELETE FROM maintenance_parts WHERE maintenance_id=?", (maintenance_id,))
+        self.db.commit()
+        for part in parts:
+            self.add_mx_part(maintenance_id, part)
+
+    def mx_parts(self, maintenance_id: int):
+        return self.db.execute("SELECT * FROM maintenance_parts WHERE maintenance_id=? ORDER BY date_ordered DESC,id DESC", (maintenance_id,)).fetchall()
+
+    def mx_parts_total(self, maintenance_id: int) -> float:
+        row = self.db.execute("SELECT COALESCE(SUM(total_cost),0) FROM maintenance_parts WHERE maintenance_id=?", (maintenance_id,)).fetchone()
+        return round(float(row[0] or 0), 2)
+
+    def structured_parts_for_vehicle(self, vehicle_id: int):
+        rows = self.db.execute("""SELECT mp.*, m.service_date, m.service_start_date, m.service_end_date, m.description, m.category, v.nickname, v.vin, v.year, v.make, v.model
+                                  FROM maintenance_parts mp
+                                  JOIN maintenance m ON m.id=mp.maintenance_id
+                                  JOIN vehicles v ON v.id=m.vehicle_id
+                                  WHERE v.id=?""", (vehicle_id,)).fetchall()
+        return sorted(rows, key=lambda r: (date_sort_key(r["service_start_date"] or r["service_date"]), date_sort_key(r["date_ordered"]), r["id"]), reverse=True)
+
+    def structured_parts_all(self, start: str = "", end: str = ""):
+        rows = self.db.execute("""SELECT mp.*, m.service_date, m.service_start_date, m.service_end_date, m.category, m.description, m.mileage, m.hours, v.nickname, v.vin, v.year, v.make, v.model
+                                   FROM maintenance_parts mp
+                                   JOIN maintenance m ON m.id=mp.maintenance_id
+                                   JOIN vehicles v ON v.id=m.vehicle_id""").fetchall()
+        s = date_sort_key(start) if start else ""
+        e = date_sort_key(end) if end else ""
+        filtered = [r for r in rows if (not s or date_sort_key(r["service_start_date"] or r["service_date"]) >= s) and (not e or date_sort_key(r["service_start_date"] or r["service_date"]) <= e)]
+        return sorted(filtered, key=lambda r: (date_sort_key(r["service_start_date"] or r["service_date"]), date_sort_key(r["date_ordered"]), r["id"]), reverse=True)
+
+    def export_parts_csv(self, path, start: str = "", end: str = ""):
+        rows = self.structured_parts_all(start, end)
+        fields = ["maintenance_id", "service_date", "vehicle", "vin", "category", "description", "part_name", "part_number", "supplier", "date_ordered", "quantity", "unit_cost", "total_cost", "technician", "technician_rank", "labor_rate", "labor_hours", "labor_value", "notes"]
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fields)
+            writer.writeheader()
+            for r in rows:
+                vehicle = r["nickname"] or " ".join(x for x in [r["year"], r["make"], r["model"]] if x) or r["vin"]
+                writer.writerow({
+                    "maintenance_id": r["maintenance_id"],
+                    "service_date": r["service_date"],
+                    "vehicle": vehicle,
+                    "vin": "" if str(r["vin"]).startswith("NO-VIN-") else r["vin"],
+                    "category": r["category"],
+                    "description": r["description"],
+                    "part_name": r["part_name"],
+                    "part_number": r["part_number"],
+                    "supplier": r["supplier"],
+                    "date_ordered": r["date_ordered"],
+                    "quantity": f"{float(r['quantity'] or 0):.1f}",
+                    "unit_cost": f"{float(r['unit_cost'] or 0):.2f}",
+                    "total_cost": f"{float(r['total_cost'] or 0):.2f}",
+                    "technician": r["technician_name"],
+                    "technician_rank": r["technician_rank"],
+                    "labor_rate": f"{float(r['technician_labor_rate'] or 0):.2f}",
+                    "labor_hours": f"{float(r['labor_hours'] or 0):.2f}",
+                    "labor_value": f"{float(r['labor_value'] or 0):.2f}",
+                    "notes": r["notes"],
+                })
+        return path
+
     def work_items(self):
         return self.db.execute("SELECT * FROM work_items ORDER BY work_date DESC,id DESC").fetchall()
 
+    def _work_values(self, data: dict):
+        vals = dict(data)
+        vals["work_date"] = normalize_date_input(vals.get("work_date"), "Work date", required=True)
+        return vals
+
     def add_work(self, data: dict):
+        data = self._work_values(data)
         ts = nowstamp()
         self.db.execute("""INSERT INTO work_items(created_at,updated_at,work_date,title,category,description,parts,vendor,cost,labor_hours,hours,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ts, ts, data["work_date"], data["title"], data["category"], data["description"], data["parts"], data["vendor"], data["cost"], data["labor_hours"], data["hours"], data["notes"]))
         self.db.commit()
 
     def update_work(self, wid: int, data: dict):
+        data = self._work_values(data)
         self.db.execute("""UPDATE work_items SET updated_at=?, work_date=?, title=?, category=?, description=?, parts=?, vendor=?, cost=?, labor_hours=?, hours=?, notes=? WHERE id=?""",
             (nowstamp(), data["work_date"], data["title"], data["category"], data["description"], data["parts"], data["vendor"], data["cost"], data["labor_hours"], data["hours"], data["notes"], wid))
         self.db.commit()
@@ -378,10 +867,19 @@ class Store:
     def search_records(self, term: str):
         like = f"%{term}%"
         rows = []
-        for r in self.db.execute("""SELECT 'Vehicle MX' AS kind, m.id AS record_id, v.id AS vehicle_id, v.vin, v.nickname, m.service_date AS rec_date, m.description AS text, m.cost, m.labor_hours
+        for r in self.db.execute("""SELECT 'Vehicle MX' AS kind, m.id AS record_id, v.id AS vehicle_id, v.vin, v.nickname, m.service_date AS rec_date, m.description AS text, 0 AS cost, 0 AS labor_hours
                                   FROM maintenance m JOIN vehicles v ON v.id=m.vehicle_id
-                                  WHERE v.vin LIKE ? OR v.nickname LIKE ? OR v.make LIKE ? OR v.model LIKE ? OR m.category LIKE ? OR m.description LIKE ? OR m.parts LIKE ? OR m.vendor LIKE ?
-                                  ORDER BY m.service_date DESC LIMIT 500""", (like,)*8):
+                                  WHERE v.vin LIKE ? OR v.nickname LIKE ? OR v.make LIKE ? OR v.model LIKE ? OR m.category LIKE ? OR m.description LIKE ?
+                                  ORDER BY m.service_date DESC LIMIT 500""", (like,)*6):
+            rows.append(dict(r))
+        for r in self.db.execute("""SELECT 'Vehicle Part' AS kind, m.id AS record_id, v.id AS vehicle_id, v.vin, v.nickname, m.service_date AS rec_date,
+                                         (mp.part_name || CASE WHEN mp.part_number != '' THEN ' #' || mp.part_number ELSE '' END || CASE WHEN mp.supplier != '' THEN ' from ' || mp.supplier ELSE '' END || CASE WHEN mp.technician_name != '' THEN ' by ' || mp.technician_name ELSE '' END) AS text,
+                                         (mp.total_cost + mp.labor_value) AS cost, mp.labor_hours AS labor_hours
+                                  FROM maintenance_parts mp
+                                  JOIN maintenance m ON m.id=mp.maintenance_id
+                                  JOIN vehicles v ON v.id=m.vehicle_id
+                                  WHERE v.vin LIKE ? OR v.nickname LIKE ? OR v.make LIKE ? OR v.model LIKE ? OR mp.part_name LIKE ? OR mp.part_number LIKE ? OR mp.supplier LIKE ? OR mp.technician_name LIKE ? OR mp.technician_rank LIKE ? OR mp.notes LIKE ?
+                                  ORDER BY m.service_date DESC LIMIT 500""", (like,)*10):
             rows.append(dict(r))
         for r in self.db.execute("""SELECT 'Unlinked Work' AS kind, id AS record_id, NULL AS vehicle_id, '' AS vin, title AS nickname, work_date AS rec_date, description AS text, cost, labor_hours
                                   FROM work_items
@@ -393,7 +891,7 @@ class Store:
                                   WHERE v.vin LIKE ? OR v.nickname LIKE ? OR n.note LIKE ?
                                   ORDER BY n.created_at DESC LIMIT 500""", (like, like, like)):
             rows.append(dict(r))
-        return sorted(rows, key=lambda x: x.get("rec_date") or "", reverse=True)[:500]
+        return sorted(rows, key=lambda x: date_sort_key(x.get("rec_date") or ""), reverse=True)[:500]
 
     def profile(self):
         return self.db.execute("SELECT * FROM profile WHERE id=1").fetchone()
@@ -403,32 +901,33 @@ class Store:
         self.db.commit()
 
     def profile_incomplete(self):
-        p = self.profile()
-        return not p or not str(p["name"]).strip() or not str(p["rank"]).strip() or float(p["labor_cost"] or 0) <= 0
+        return self.default_technician() is None
 
     def totals(self, start: str = "", end: str = "", vehicle_id=None):
-        params=[]
-        where=[]
-        if start:
-            where.append("service_date >= ?"); params.append(start)
-        if end:
-            where.append("service_date <= ?"); params.append(end)
-        if vehicle_id:
-            where.append("vehicle_id = ?"); params.append(vehicle_id)
-        wh = (" WHERE " + " AND ".join(where)) if where else ""
-        mx = self.db.execute(f"SELECT COALESCE(SUM(labor_hours),0), COALESCE(SUM(cost),0), COUNT(*) FROM maintenance{wh}", params).fetchone()
-        params2=[]; where2=[]
-        if start:
-            where2.append("work_date >= ?"); params2.append(start)
-        if end:
-            where2.append("work_date <= ?"); params2.append(end)
-        wh2 = (" WHERE " + " AND ".join(where2)) if where2 else ""
-        work = self.db.execute(f"SELECT COALESCE(SUM(labor_hours),0), COALESCE(SUM(cost),0), COUNT(*) FROM work_items{wh2}", params2).fetchone() if vehicle_id is None else (0,0,0)
-        labor_hours = float(mx[0] or 0) + float(work[0] or 0)
-        direct_cost = float(mx[1] or 0) + float(work[1] or 0)
-        count = int(mx[2] or 0) + int(work[2] or 0)
-        rate = float((self.profile() or {"labor_cost":0})["labor_cost"] or 0)
-        return {"labor_hours": labor_hours, "direct_cost": direct_cost, "labor_value": labor_hours * rate, "grand_total": direct_cost + labor_hours * rate, "records": count, "rate": rate}
+        s = date_sort_key(start) if start else ""
+        e = date_sort_key(end) if end else ""
+        mx_rows = self.db.execute("SELECT * FROM maintenance" + (" WHERE vehicle_id=?" if vehicle_id else ""), ((vehicle_id,) if vehicle_id else ())).fetchall()
+        mx_rows = [r for r in mx_rows if (not s or date_sort_key(r["service_start_date"] or r["service_date"]) >= s) and (not e or date_sort_key(r["service_start_date"] or r["service_date"]) <= e)]
+        mx_ids = [r["id"] for r in mx_rows]
+        labor_hours = 0.0
+        labor_value = 0.0
+        parts_cost = 0.0
+        if mx_ids:
+            q = ",".join("?" for _ in mx_ids)
+            row = self.db.execute(f"SELECT COALESCE(SUM(total_cost),0), COALESCE(SUM(labor_hours),0), COALESCE(SUM(labor_value),0) FROM maintenance_parts WHERE maintenance_id IN ({q})", mx_ids).fetchone()
+            parts_cost = float(row[0] or 0)
+            labor_hours = float(row[1] or 0)
+            labor_value = float(row[2] or 0)
+        other_direct_cost = 0.0
+        count = len(mx_rows)
+        if vehicle_id is None:
+            work_rows = self.db.execute("SELECT * FROM work_items").fetchall()
+            work_rows = [r for r in work_rows if (not s or date_sort_key(r["work_date"]) >= s) and (not e or date_sort_key(r["work_date"]) <= e)]
+            labor_hours += sum(float(r["labor_hours"] or 0) for r in work_rows)
+            other_direct_cost += sum(float(r["cost"] or 0) for r in work_rows)
+            count += len(work_rows)
+        direct_cost = other_direct_cost + parts_cost
+        return {"labor_hours": labor_hours, "direct_cost": direct_cost, "other_direct_cost": other_direct_cost, "parts_cost": parts_cost, "labor_value": labor_value, "grand_total": direct_cost + labor_value, "records": count, "rate": 0}
 
     def save_state(self, key: str, value: str):
         self.db.execute("INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
@@ -455,14 +954,15 @@ class Store:
         self.db.execute("DELETE FROM work_items")
         self.db.execute("DELETE FROM vehicles")
         self.db.execute("DELETE FROM links")
+        self.db.execute("DELETE FROM technicians")
         self.db.execute("DELETE FROM app_state")
         self.db.execute("UPDATE profile SET name='', rank='', labor_cost=0, updated_at=? WHERE id=1", (nowstamp(),))
         self.db.commit()
 
     def maintenance_all(self):
-        return self.db.execute("""SELECT m.*, v.nickname, v.vin, v.year, v.make, v.model
-                                  FROM maintenance m JOIN vehicles v ON v.id=m.vehicle_id
-                                  ORDER BY m.service_date DESC, m.id DESC""").fetchall()
+        rows = self.db.execute("""SELECT m.*, v.nickname, v.vin, v.year, v.make, v.model
+                                  FROM maintenance m JOIN vehicles v ON v.id=m.vehicle_id""").fetchall()
+        return sorted(rows, key=lambda r: (date_sort_key(r["service_start_date"] or r["service_date"]), r["id"]), reverse=True)
 
     def dashboard_data(self):
         vehicles = self.vehicles()
@@ -474,19 +974,22 @@ class Store:
         parts = Counter()
         repeats = Counter()
         due = []
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = date_sort_key(today_date())
         for row in mx:
             vname = row["nickname"] or " ".join(x for x in [row["year"], row["make"], row["model"]] if x) or row["vin"]
+            structured = self.mx_parts(row["id"])
+            part_total = sum(float(p["total_cost"] or 0) for p in structured)
+            labor_total = sum(float(p["labor_hours"] or 0) for p in structured)
             by_category[row["category"] or "Uncategorized"]["count"] += 1
-            by_category[row["category"] or "Uncategorized"]["cost"] += float(row["cost"] or 0)
-            by_category[row["category"] or "Uncategorized"]["labor"] += float(row["labor_hours"] or 0)
+            by_category[row["category"] or "Uncategorized"]["cost"] += part_total
+            by_category[row["category"] or "Uncategorized"]["labor"] += labor_total
             repeats[(vname, (row["category"] or row["description"] or "Uncategorized")[:45])] += 1
-            if row["parts"]:
-                for part in re.split(r"[,;/\n]+", row["parts"]):
-                    part = part.strip()
-                    if part:
-                        parts[part] += 1
-            if row["next_due"] and row["next_due"] <= today:
+            if structured:
+                for part_row in structured:
+                    name = str(part_row["part_name"] or "").strip()
+                    if name:
+                        parts[name] += 1
+            if row["next_due"] and date_sort_key(row["next_due"]) <= today:
                 due.append(row)
         for v in vehicles:
             vt = self.totals(None, None, v["id"])
@@ -495,10 +998,10 @@ class Store:
         return {"vehicles": vehicles, "mx": mx, "work": work, "totals": totals, "by_vehicle": by_vehicle, "by_category": by_category, "parts": parts, "repeats": repeats, "due": due}
 
     def parts_history(self, vehicle_id: int):
-        return self.db.execute("""SELECT service_date, parts, vendor, description, cost, created_at
-                                  FROM maintenance
-                                  WHERE vehicle_id=? AND TRIM(COALESCE(parts,'')) != ''
-                                  ORDER BY service_date DESC, id DESC""", (vehicle_id,)).fetchall()
+        structured = self.structured_parts_for_vehicle(vehicle_id)
+        if structured:
+            return structured
+        return []
 
     def links(self):
         return self.db.execute("SELECT * FROM links ORDER BY sort_order,id").fetchall()
@@ -536,8 +1039,408 @@ class EntryDialog(simpledialog.Dialog):
                 first_entry = ent
             self.vars[key] = var
         return first_entry
+    def validate(self):
+        for key, var in self.vars.items():
+            if key in DATE_INPUT_KEYS:
+                try:
+                    required = key in {"service_start_date", "work_date"}
+                    var.set(normalize_date_input(var.get(), DATE_INPUT_LABELS.get(key, "Date"), required=required))
+                except ValueError as exc:
+                    messagebox.showerror(APP_NAME, str(exc), parent=self)
+                    return False
+        return True
     def apply(self):
         self.values = {k: v.get().strip() for k, v in self.vars.items()}
+
+
+class PartDialog(simpledialog.Dialog):
+    def __init__(self, parent, title="Maintenance Part", values=None, supplier_rows=None, technician_rows=None, default_technician_id=None):
+        self.initial = values or {}
+        self.supplier_rows = [dict(r) for r in (supplier_rows or [])]
+        self.supplier_by_title = {r.get("title", ""): r for r in self.supplier_rows if r.get("title")}
+        self.technician_rows = [dict(r) for r in (technician_rows or []) if int(dict(r).get("active", 1) or 0)]
+        self.technician_by_label = {}
+        self.default_technician_id = default_technician_id
+        self.values = None
+        super().__init__(parent, title)
+
+    def body(self, master):
+        self.vars = {}
+        fields = [
+            ("part_name", "Part name", self.initial.get("part_name", "")),
+            ("part_number", "Part number", self.initial.get("part_number", "")),
+        ]
+        first = None
+        row = 0
+        for key, label, default in fields:
+            ttk.Label(master, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=4)
+            var = tk.StringVar(value=default)
+            ent = ttk.Entry(master, textvariable=var, width=54)
+            ent.grid(row=row, column=1, sticky="ew", padx=4, pady=4)
+            if first is None:
+                first = ent
+            self.vars[key] = var
+            row += 1
+
+        ttk.Label(master, text="Supplier used").grid(row=row, column=0, sticky="w", padx=4, pady=4)
+        self.vars["supplier"] = tk.StringVar(value=self.initial.get("supplier", ""))
+        supplier_values = sorted(self.supplier_by_title)
+        self.supplier_combo = ttk.Combobox(master, textvariable=self.vars["supplier"], values=supplier_values, width=52)
+        self.supplier_combo.grid(row=row, column=1, sticky="ew", padx=4, pady=4)
+        self.supplier_combo.bind("<<ComboboxSelected>>", self.fill_supplier_details)
+        row += 1
+
+        detail_fields = [
+            ("supplier_url", "Supplier website", self.initial.get("supplier_url", "")),
+            ("supplier_contact_name", "Supplier point of contact", self.initial.get("supplier_contact_name", "")),
+            ("supplier_contact_title", "Supplier contact role", self.initial.get("supplier_contact_title", "")),
+            ("supplier_email", "Supplier email", self.initial.get("supplier_email", "")),
+            ("supplier_phone", "Supplier phone", self.initial.get("supplier_phone", "")),
+            ("supplier_address", "Supplier address/location", self.initial.get("supplier_address", "")),
+            ("supplier_notes", "Supplier/source notes", self.initial.get("supplier_notes", "")),
+            ("date_ordered", "Date ordered (DD MMM YYYY)", self.initial.get("date_ordered", "")),
+            ("quantity", "Quantity", str(self.initial.get("quantity", "1") or "1")),
+            ("unit_cost", "Unit cost", str(self.initial.get("unit_cost", "0") or "0")),
+        ]
+        for key, label, default in detail_fields:
+            ttk.Label(master, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=4)
+            var = tk.StringVar(value=default)
+            ent = ttk.Entry(master, textvariable=var, width=54)
+            ent.grid(row=row, column=1, sticky="ew", padx=4, pady=4)
+            self.vars[key] = var
+            row += 1
+        ttk.Label(master, text="Technician").grid(row=row, column=0, sticky="w", padx=4, pady=4)
+        initial_tid = str(self.initial.get("technician_id") or self.default_technician_id or "")
+        tech_labels = []
+        initial_label = ""
+        for tech in self.technician_rows:
+            label = f"{tech.get('name','')} — {tech.get('rank','')} — ${float(tech.get('labor_rate') or 0):.2f}/hr".replace(" —  — ", " — ")
+            tech_labels.append(label)
+            self.technician_by_label[label] = tech
+            if str(tech.get("id")) == initial_tid:
+                initial_label = label
+        self.vars["technician"] = tk.StringVar(value=initial_label or (tech_labels[0] if tech_labels else ""))
+        self.tech_combo = ttk.Combobox(master, textvariable=self.vars["technician"], values=tech_labels, state="readonly", width=52)
+        self.tech_combo.grid(row=row, column=1, sticky="ew", padx=4, pady=4)
+        row += 1
+        ttk.Label(master, text="Labor hours").grid(row=row, column=0, sticky="w", padx=4, pady=4)
+        self.vars["labor_hours"] = tk.StringVar(value=str(self.initial.get("labor_hours", "0") or "0"))
+        ttk.Entry(master, textvariable=self.vars["labor_hours"], width=54).grid(row=row, column=1, sticky="ew", padx=4, pady=4)
+        row += 1
+        ttk.Label(master, text="Part notes").grid(row=row, column=0, sticky="w", padx=4, pady=4)
+        self.vars["notes"] = tk.StringVar(value=self.initial.get("notes", ""))
+        ttk.Entry(master, textvariable=self.vars["notes"], width=54).grid(row=row, column=1, sticky="ew", padx=4, pady=4)
+        row += 1
+        ttk.Label(master, text="Select a saved supplier/source or type a new one. New supplier details are saved into Suppliers/Sources.", wraplength=520).grid(row=row, column=0, columnspan=2, sticky="w", padx=4, pady=(8, 4))
+        row += 1
+        ttk.Label(master, text="Total is calculated from quantity × unit cost.").grid(row=row, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 4))
+        return first
+
+    def fill_supplier_details(self, event=None):
+        row = self.supplier_by_title.get(self.vars["supplier"].get().strip())
+        if not row:
+            return
+        mapping = {
+            "supplier_url": "url",
+            "supplier_contact_name": "contact_name",
+            "supplier_contact_title": "contact_title",
+            "supplier_email": "email",
+            "supplier_phone": "phone",
+            "supplier_address": "address",
+            "supplier_notes": "notes",
+        }
+        for dest, src in mapping.items():
+            self.vars[dest].set(row.get(src, "") or "")
+
+    def validate(self):
+        if not self.vars["part_name"].get().strip():
+            messagebox.showerror(APP_NAME, "Part name is required.", parent=self)
+            return False
+        try:
+            self.vars["date_ordered"].set(normalize_optional_date(self.vars["date_ordered"].get(), "Date ordered"))
+        except ValueError as exc:
+            messagebox.showerror(APP_NAME, str(exc), parent=self)
+            return False
+        for key, label in [("quantity", "Quantity"), ("unit_cost", "Unit cost"), ("labor_hours", "Labor hours")]:
+            try:
+                float(self.vars[key].get() or 0)
+            except ValueError:
+                messagebox.showerror(APP_NAME, f"{label} must be a number.", parent=self)
+                return False
+        if self.technician_rows and self.vars["technician"].get() not in self.technician_by_label:
+            messagebox.showerror(APP_NAME, "Select a technician.", parent=self)
+            return False
+        return True
+
+    def apply(self):
+        qty = float(self.vars["quantity"].get() or 0)
+        unit = float(self.vars["unit_cost"].get() or 0)
+        labor_hours = float(self.vars["labor_hours"].get() or 0)
+        self.values = {k: v.get().strip() for k, v in self.vars.items() if k != "technician"}
+        tech = self.technician_by_label.get(self.vars["technician"].get())
+        if tech:
+            self.values["technician_id"] = tech.get("id")
+            self.values["technician_name"] = tech.get("name", "")
+            self.values["technician_rank"] = tech.get("rank", "")
+            self.values["technician_labor_rate"] = float(tech.get("labor_rate") or 0)
+        self.values["quantity"] = qty
+        self.values["unit_cost"] = unit
+        self.values["total_cost"] = round(qty * unit, 2)
+        self.values["labor_hours"] = labor_hours
+        self.values["labor_value"] = round(labor_hours * float(self.values.get("technician_labor_rate") or 0), 2)
+
+
+class MaintenanceDialog(simpledialog.Dialog):
+    def __init__(self, parent, title, fields, parts=None, supplier_rows=None, technician_rows=None, default_technician_id=None):
+        self.fields = fields
+        self.parts = [dict(p) for p in (parts or [])]
+        self.supplier_rows = supplier_rows or []
+        self.technician_rows = technician_rows or []
+        self.default_technician_id = default_technician_id
+        self.values = None
+        super().__init__(parent, title)
+
+    def body(self, master):
+        self.vars = {}
+        first = None
+        for r, (key, label, default) in enumerate(self.fields):
+            ttk.Label(master, text=label).grid(row=r, column=0, sticky="w", padx=4, pady=3)
+            var = tk.StringVar(value=default)
+            ent = ttk.Entry(master, textvariable=var, width=62)
+            ent.grid(row=r, column=1, columnspan=3, sticky="ew", padx=4, pady=3)
+            if first is None:
+                first = ent
+            self.vars[key] = var
+        row = len(self.fields)
+        ttk.Label(master, text="Parts for this maintenance record").grid(row=row, column=0, columnspan=4, sticky="w", padx=4, pady=(10, 3))
+        row += 1
+        self.part_tree = ttk.Treeview(master, columns=("name", "number", "supplier", "technician", "ordered", "qty", "unit", "total", "labor"), show="headings", height=6)
+        for col, label, width in [
+            ("name", "Part", 160), ("number", "Part #", 90), ("supplier", "Supplier", 125), ("technician", "Technician", 135),
+            ("ordered", "Ordered", 85), ("qty", "Qty", 50), ("unit", "Unit", 65), ("total", "Part Total", 75), ("labor", "Labor", 75),
+        ]:
+            self.part_tree.heading(col, text=label)
+            self.part_tree.column(col, width=width, anchor="w")
+        self.part_tree.grid(row=row, column=0, columnspan=4, sticky="nsew", padx=4, pady=3)
+        row += 1
+        ttk.Button(master, text="Add Part", command=self.add_part).grid(row=row, column=0, sticky="ew", padx=4, pady=3)
+        ttk.Button(master, text="Edit Part", command=self.edit_part).grid(row=row, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Button(master, text="Remove Part", command=self.remove_part).grid(row=row, column=2, sticky="ew", padx=4, pady=3)
+        self.parts_total_var = tk.StringVar(value="")
+        ttk.Label(master, textvariable=self.parts_total_var).grid(row=row, column=3, sticky="e", padx=4, pady=3)
+        master.grid_columnconfigure(1, weight=1)
+        self.refresh_parts()
+        return first
+
+    def selected_part_index(self):
+        sel = self.part_tree.selection()
+        if not sel:
+            messagebox.showinfo(APP_NAME, "Select a part first.", parent=self)
+            return None
+        return int(sel[0])
+
+    def refresh_parts(self):
+        self.part_tree.delete(*self.part_tree.get_children())
+        total = 0.0
+        labor_total = 0.0
+        for idx, p in enumerate(self.parts):
+            qty = float(p.get("quantity") or 0)
+            unit = float(p.get("unit_cost") or 0)
+            line = round(qty * unit, 2)
+            labor_hours = float(p.get("labor_hours") or 0)
+            labor_rate = float(p.get("technician_labor_rate") or 0)
+            labor_value = round(labor_hours * labor_rate, 2)
+            p["total_cost"] = line
+            p["labor_value"] = labor_value
+            total += line
+            labor_total += labor_value
+            self.part_tree.insert("", "end", iid=str(idx), values=(p.get("part_name", ""), p.get("part_number", ""), p.get("supplier", ""), p.get("technician_name", ""), p.get("date_ordered", ""), f"{qty:g}", f"${unit:.2f}", f"${line:.2f}", f"${labor_value:.2f}"))
+        self.parts_total_var.set(f"Parts: ${total:.2f}  Labor: ${labor_total:.2f}")
+
+    def add_part(self):
+        d = PartDialog(self, "Add Part", supplier_rows=self.supplier_rows, technician_rows=self.technician_rows, default_technician_id=self.default_technician_id)
+        if d.values:
+            self.parts.append(d.values)
+            self.refresh_parts()
+
+    def edit_part(self):
+        idx = self.selected_part_index()
+        if idx is None:
+            return
+        d = PartDialog(self, "Edit Part", self.parts[idx], supplier_rows=self.supplier_rows, technician_rows=self.technician_rows, default_technician_id=self.default_technician_id)
+        if d.values:
+            self.parts[idx] = d.values
+            self.refresh_parts()
+
+    def remove_part(self):
+        idx = self.selected_part_index()
+        if idx is None:
+            return
+        del self.parts[idx]
+        self.refresh_parts()
+
+    def validate(self):
+        for key, var in self.vars.items():
+            if key in DATE_INPUT_KEYS:
+                try:
+                    required = key == "service_start_date"
+                    var.set(normalize_date_input(var.get(), DATE_INPUT_LABELS.get(key, "Date"), required=required))
+                except ValueError as exc:
+                    messagebox.showerror(APP_NAME, str(exc), parent=self)
+                    return False
+        return True
+
+    def apply(self):
+        self.values = {k: v.get().strip() for k, v in self.vars.items()}
+        self.values["structured_parts"] = self.parts
+
+
+class TechnicianSelectDialog(simpledialog.Dialog):
+    def __init__(self, parent, store):
+        self.store = store
+        self.values = None
+        super().__init__(parent, "Select Technician")
+
+    def body(self, master):
+        ttk.Label(master, text="Select the default technician for new itemized parts/labor.", wraplength=420).grid(row=0, column=0, columnspan=3, sticky="w", padx=4, pady=6)
+        self.var = tk.StringVar()
+        self.combo = ttk.Combobox(master, textvariable=self.var, state="readonly", width=48)
+        self.combo.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=4)
+        ttk.Button(master, text="Add Technician", command=self.add_technician).grid(row=1, column=2, sticky="ew", padx=4, pady=4)
+        self.refresh()
+        return self.combo
+
+    def refresh(self):
+        self.labels = {}
+        values = []
+        default = self.store.default_technician()
+        default_id = str(default["id"]) if default else ""
+        selected = ""
+        for tech in self.store.technicians(include_inactive=False):
+            label = f"{tech['name']} — {tech['rank']} — ${float(tech['labor_rate'] or 0):.2f}/hr".replace(" —  — ", " — ")
+            self.labels[label] = tech["id"]
+            values.append(label)
+            if str(tech["id"]) == default_id:
+                selected = label
+        self.combo.configure(values=values)
+        self.var.set(selected or (values[0] if values else ""))
+
+    def add_technician(self):
+        d = EntryDialog(self, "Add Technician", [("name", "Name", ""), ("rank", "Rank", ""), ("labor_rate", "Labor cost per hour", "0"), ("active", "Active? 1=yes, 0=no", "1")])
+        if d.values:
+            try:
+                tid = self.store.add_technician(d.values)
+                self.store.set_default_technician(tid)
+                self.refresh()
+            except Exception as exc:
+                messagebox.showerror(APP_NAME, str(exc), parent=self)
+
+    def validate(self):
+        if self.var.get() not in self.labels:
+            messagebox.showerror(APP_NAME, "Select or add a technician.", parent=self)
+            return False
+        return True
+
+    def apply(self):
+        self.values = {"technician_id": self.labels[self.var.get()]}
+
+
+class TechnicianManagerDialog(simpledialog.Dialog):
+    def __init__(self, parent, store):
+        self.store = store
+        self.values = None
+        super().__init__(parent, "Technicians")
+
+    def body(self, master):
+        self.listbox = tk.Listbox(master, width=70, height=10)
+        self.listbox.grid(row=0, column=0, columnspan=5, sticky="nsew", padx=4, pady=4)
+        ttk.Button(master, text="Add", command=self.add).grid(row=1, column=0, sticky="ew", padx=3, pady=4)
+        ttk.Button(master, text="Edit", command=self.edit).grid(row=1, column=1, sticky="ew", padx=3, pady=4)
+        ttk.Button(master, text="Mark Active/Inactive", command=self.toggle_active).grid(row=1, column=2, sticky="ew", padx=3, pady=4)
+        ttk.Button(master, text="Set Default", command=self.set_default).grid(row=1, column=3, sticky="ew", padx=3, pady=4)
+        ttk.Button(master, text="Delete", command=self.delete).grid(row=1, column=4, sticky="ew", padx=3, pady=4)
+        master.grid_columnconfigure(0, weight=1)
+        self.refresh()
+        return self.listbox
+
+    def refresh(self):
+        self.rows = list(self.store.technicians(include_inactive=True))
+        default = self.store.default_technician()
+        default_id = default["id"] if default else None
+        self.listbox.delete(0, "end")
+        for tech in self.rows:
+            state = "active" if int(tech["active"] or 0) else "inactive"
+            marker = " [default]" if tech["id"] == default_id else ""
+            self.listbox.insert("end", f"{tech['name']} | {tech['rank']} | ${float(tech['labor_rate'] or 0):.2f}/hr | {state}{marker}")
+
+    def selected(self):
+        sel = self.listbox.curselection()
+        if not sel:
+            messagebox.showinfo(APP_NAME, "Select a technician first.", parent=self)
+            return None
+        return self.rows[sel[0]]
+
+    def fields(self, row=None):
+        row = row or {}
+        get = row.get if hasattr(row, "get") else lambda k, d="": row[k]
+        return [("name", "Name", get("name", "")), ("rank", "Rank", get("rank", "")), ("labor_rate", "Labor cost per hour", str(get("labor_rate", "0") or "0")), ("active", "Active? 1=yes, 0=no", str(get("active", "1") if get("active", "1") is not None else "1"))]
+
+    def add(self):
+        d = EntryDialog(self, "Add Technician", self.fields({}))
+        if d.values:
+            try:
+                tid = self.store.add_technician(d.values)
+                self.store.set_default_technician(tid)
+                self.refresh()
+            except Exception as exc:
+                messagebox.showerror(APP_NAME, str(exc), parent=self)
+
+    def edit(self):
+        row = self.selected()
+        if not row: return
+        d = EntryDialog(self, "Edit Technician", self.fields(row))
+        if d.values:
+            try:
+                self.store.update_technician(row["id"], d.values)
+                self.refresh()
+            except Exception as exc:
+                messagebox.showerror(APP_NAME, str(exc), parent=self)
+
+    def toggle_active(self):
+        row = self.selected()
+        if not row: return
+        data = dict(row)
+        data["active"] = "0" if int(row["active"] or 0) else "1"
+        try:
+            self.store.update_technician(row["id"], data)
+            self.refresh()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, str(exc), parent=self)
+
+    def set_default(self):
+        row = self.selected()
+        if not row: return
+        try:
+            if not int(row["active"] or 0):
+                raise ValueError("Default technician must be active.")
+            self.store.set_default_technician(row["id"])
+            self.refresh()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, str(exc), parent=self)
+
+    def delete(self):
+        row = self.selected()
+        if not row: return
+        if not messagebox.askyesno(APP_NAME, f"Delete technician {row['name']}? Used technicians cannot be deleted.", parent=self):
+            return
+        try:
+            self.store.delete_technician(row["id"])
+            self.refresh()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, str(exc), parent=self)
+
+    def apply(self):
+        self.values = {"updated": True}
 
 
 class App:
@@ -588,8 +1491,8 @@ class App:
         ttk.Button(top, text="Decode VIN", command=self.decode_thread).pack(side="left", padx=4)
         ttk.Button(top, text="Save Vehicle by Reg Number", command=self.add_manual_vehicle).pack(side="left", padx=4)
         ttk.Button(top, text="Export TXT", command=self.export_record).pack(side="right", padx=4)
-        ttk.Button(top, text="Profile / Totals", command=self.show_profile_totals).pack(side="right", padx=4)
-        ttk.Button(top, text="Edit Profile", command=self.edit_profile).pack(side="right", padx=4)
+        ttk.Button(top, text="Technician / Totals", command=self.show_profile_totals).pack(side="right", padx=4)
+        ttk.Button(top, text="Technicians", command=self.edit_profile).pack(side="right", padx=4)
         ttk.Button(top, text="Quick Guide", command=self.show_quick_guide).pack(side="right", padx=4)
         ttk.Button(top, text="A+", width=3, command=self.increase_font).pack(side="right", padx=2)
         ttk.Button(top, text="A-", width=3, command=self.decrease_font).pack(side="right", padx=2)
@@ -872,7 +1775,7 @@ class App:
             "="*72,
             f"Vehicles: {len(data['vehicles'])}    MX records: {len(data['mx'])}    Other Work: {len(data['work'])}",
             f"Labor hours: {t['labor_hours']:.2f}    Labor value: ${t['labor_value']:.2f}",
-            f"Direct costs: ${t['direct_cost']:.2f}    Grand total: ${t['grand_total']:.2f}",
+            f"Parts total: ${t['parts_cost']:.2f}    Other Work costs: ${t['other_direct_cost']:.2f}    Grand total: ${t['grand_total']:.2f}",
             "",
             "Due / Overdue:",
         ]
@@ -909,7 +1812,6 @@ class App:
             for r in data["due"]:
                 vname = r["nickname"] or " ".join(x for x in [r["year"], r["make"], r["model"]] if x) or r["vin"]
                 lines.append(f"{r['next_due']} | {vname} | {r['description'] or r['category'] or '(blank record)'}")
-                lines.append(f"  Parts: {r['parts']}  Vendor: {r['vendor']}  Cost: ${float(r['cost'] or 0):.2f}")
         else:
             lines.append("No services are recorded as due today or overdue.")
         self.set_info("\n".join(lines)+"\n")
@@ -958,7 +1860,7 @@ class App:
             "6. Use Dashboard for due service, highest-cost vehicles, parts usage, categories, and recurring trends.",
             "7. Use Search to data-mine notes, MX records, Other Work, costs, parts, and trends.",
             "8. Use Suppliers/Sources for standalone vendors and points of contact.",
-            "9. Use Profile / Totals for labor hours, labor value, direct costs, and date ranges.",
+            "9. Use Technician / Totals for labor hours, labor value, direct costs, and date ranges.",
             "10. Use Export TXT for a clean report.",
             "11. Use Backup to copy or restore the local database.",
             "12. The app opens fullscreen. Press F11 to toggle fullscreen. Press Esc to close and autosave.",
@@ -1127,7 +2029,7 @@ class App:
             if complaints:
                 for i,c in enumerate(complaints[:12],1): lines.append(f"{i}. {(c.get('components') or c.get('Component') or 'Complaint')}: {(c.get('summary') or c.get('Summary') or '')[:500]}")
             else: lines.append("No complaints returned for decoded year/make/model.")
-        lines += ["", "Mechanic tracking", "-"*70, "Use Notes for dated observations. Use Maintenance for service date, mileage, equipment hours, parts, vendor, costs, labor hours, and next-due info."]
+        lines += ["", "Mechanic tracking", "-"*70, "Use Notes for dated observations. Use Maintenance for service date, mileage, equipment hours, itemized parts, labor hours, and next-due info."]
         return "\n".join(lines)+"\n"
 
     def add_manual_vehicle(self):
@@ -1140,35 +2042,37 @@ class App:
             self.status_var.set("Saved vehicle without VIN.")
 
     def prompt_profile_if_needed(self):
-        if self.store.profile_incomplete():
-            messagebox.showinfo(APP_NAME, "Please complete your user profile: name, rank, and labor cost.")
-            self.edit_profile()
+        if not self.store.default_technician():
+            messagebox.showinfo(APP_NAME, "Select or add a technician for new itemized parts/labor.")
+            d = TechnicianSelectDialog(self.root, self.store)
+            if d.values:
+                self.store.set_default_technician(d.values["technician_id"])
+        elif not self.store.load_state("default_technician_id", ""):
+            d = TechnicianSelectDialog(self.root, self.store)
+            if d.values:
+                self.store.set_default_technician(d.values["technician_id"])
 
     def edit_profile(self):
-        p = self.store.profile()
-        fields=[("name","Name", p["name"] if p else ""), ("rank","Rank", p["rank"] if p else ""), ("labor_cost","Labor cost per hour", str(p["labor_cost"] if p else "0"))]
-        d=EntryDialog(self.root,"User Profile",fields)
-        if d.values is not None:
-            try: rate=float(d.values.get("labor_cost") or 0)
-            except ValueError: rate=0.0
-            self.store.update_profile(d.values.get("name",""), d.values.get("rank",""), rate)
-            self.status_var.set("Saved user profile.")
+        d = TechnicianManagerDialog(self.root, self.store)
+        self.status_var.set("Technician profiles updated." if d.values else "Technician profile editor closed.")
 
     def show_profile_totals(self):
-        p = self.store.profile()
-        if not p or self.store.profile_incomplete():
-            self.edit_profile(); p = self.store.profile()
-        d=EntryDialog(self.root,"Totals Date Range (optional)", [("start","Start date YYYY-MM-DD", ""), ("end","End date YYYY-MM-DD", "")])
+        if not self.store.default_technician():
+            self.prompt_profile_if_needed()
+        d=EntryDialog(self.root,"Totals Date Range (optional)", [("start","Start date DD MMM YYYY", ""), ("end","End date DD MMM YYYY", "")])
         start=end=""
         if d.values:
             start=d.values.get("start",""); end=d.values.get("end","")
         prof = self.store.totals(start,end,None)
-        lines=[f"User Profile", "="*60, f"Name: {p['name']}", f"Rank: {p['rank']}", f"Labor cost/hr: ${float(p['labor_cost'] or 0):.2f}", f"Date range: {start or 'all'} to {end or 'all'}", "", "Profile totals including vehicle MX and other work", "-"*60, f"Records: {prof['records']}", f"Labor hours: {prof['labor_hours']:.2f}", f"Labor cost value: ${prof['labor_value']:.2f}", f"Parts/direct costs: ${prof['direct_cost']:.2f}", f"Grand total: ${prof['grand_total']:.2f}"]
+        default_tech = self.store.default_technician()
+        lines=[f"Technician / Totals", "="*60, f"Default technician: {(default_tech['name'] if default_tech else 'None')}", f"Date range: {start or 'all'} to {end or 'all'}", "", "Totals including vehicle MX itemized part labor and other work", "-"*60, f"Records: {prof['records']}", f"Labor hours: {prof['labor_hours']:.2f}", f"Labor cost value: ${prof['labor_value']:.2f}", f"Parts total: ${prof['parts_cost']:.2f}", f"Other Work costs: ${prof['other_direct_cost']:.2f}", f"Combined direct costs: ${prof['direct_cost']:.2f}", f"Grand total: ${prof['grand_total']:.2f}", "", "Technicians:"]
+        for tech in self.store.technicians(include_inactive=True):
+            lines.append(f"  {tech['name']} | {tech['rank']} | ${float(tech['labor_rate'] or 0):.2f}/hr | {'active' if int(tech['active'] or 0) else 'inactive'}")
         if self.selected_vehicle_id:
             v=self.store.get_vehicle(self.selected_vehicle_id)
             veh=self.store.totals(start,end,self.selected_vehicle_id)
             name=v['nickname'] or ' '.join(x for x in [v['year'],v['make'],v['model']] if x) or v['vin']
-            lines += ["", f"Selected vehicle totals: {name}", "-"*60, f"Records: {veh['records']}", f"Labor hours: {veh['labor_hours']:.2f}", f"Labor cost value: ${veh['labor_value']:.2f}", f"Parts/direct costs: ${veh['direct_cost']:.2f}", f"Grand total: ${veh['grand_total']:.2f}"]
+            lines += ["", f"Selected vehicle totals: {name}", "-"*60, f"Records: {veh['records']}", f"Labor hours: {veh['labor_hours']:.2f}", f"Labor cost value: ${veh['labor_value']:.2f}", f"Parts total: ${veh['parts_cost']:.2f}", f"Other Work costs: ${veh['other_direct_cost']:.2f}", f"Combined direct costs: ${veh['direct_cost']:.2f}", f"Grand total: ${veh['grand_total']:.2f}"]
         self.set_info("\n".join(lines)+"\n")
         self.status_var.set("Showing profile/totals report.")
 
@@ -1284,13 +2188,16 @@ class App:
         self.mx_rows=self.store.maintenance(self.selected_vehicle_id)
         self.mx.delete(0, "end")
         for m in self.mx_rows:
-            main = m["description"] or m["category"] or m["parts"] or "(blank record)"
+            main = m["description"] or m["category"] or "(blank record)"
             extras = []
             if m["mileage"]: extras.append(f"mi {m['mileage']}")
             if m["hours"]: extras.append(f"hrs {m['hours']}")
-            if m["cost"]: extras.append(f"${m['cost']:.2f}")
+            part_total = self.store.mx_parts_total(m["id"])
+            if part_total: extras.append(f"parts ${part_total:.2f}")
+            if m["service_end_date"]: extras.append(f"end {m['service_end_date']}")
             suffix = f" | {' / '.join(extras)}" if extras else ""
-            self.mx.insert("end", f"{m['service_date']} - {main[:90]}{suffix}")
+            shown_date = m["service_start_date"] or m["service_date"]
+            self.mx.insert("end", f"{shown_date} - {main[:90]}{suffix}")
 
     def require_vehicle_for_record(self):
         if self.selected_vehicle_id:
@@ -1306,7 +2213,7 @@ class App:
         return None
 
     def mx_fields(self, row=None):
-        return [("service_date","Service date", (row["service_date"] if row else datetime.now().strftime("%Y-%m-%d"))), ("mileage","Mileage", (row["mileage"] if row else "")), ("hours","Engine/equipment hours", (row["hours"] if row else "")), ("category","Category", (row["category"] if row else "Oil/PM/Repair/Inspection")), ("description","Description", (row["description"] if row else "")), ("parts","Parts used", (row["parts"] if row else "")), ("vendor","Vendor/supplier", (row["vendor"] if row else "")), ("cost","Parts/total cost", str(row["cost"] if row else "0")), ("labor_hours","Labor hours", str(row["labor_hours"] if row else "0")), ("next_due","Next due", (row["next_due"] if row else ""))]
+        return [("service_start_date","Service start date (DD MMM YYYY)", (row["service_start_date"] or row["service_date"] if row else today_date())), ("service_end_date","Service end date (DD MMM YYYY, optional)", (row["service_end_date"] if row else "")), ("mileage","Mileage", (row["mileage"] if row else "")), ("hours","Engine/equipment hours", (row["hours"] if row else "")), ("category","Category", (row["category"] if row else "Oil/PM/Repair/Inspection")), ("description","Description", (row["description"] if row else "")), ("next_due","Next due (DD MMM YYYY, optional)", (row["next_due"] if row else ""))]
 
     def clean_numbers(self, vals):
         for k in ("cost","labor_hours"):
@@ -1317,22 +2224,38 @@ class App:
     def add_mx(self):
         vid = self.require_vehicle_for_record()
         if not vid: return
-        d=EntryDialog(self.root,"Add Maintenance Record",self.mx_fields())
+        d=MaintenanceDialog(self.root,"Add Maintenance Record",self.mx_fields(), supplier_rows=self.store.links(), technician_rows=self.store.technicians(False), default_technician_id=(self.store.default_technician()["id"] if self.store.default_technician() else None))
         if d.values is not None:
-            self.store.add_mx(vid,self.clean_numbers(d.values))
+            parts = d.values.pop("structured_parts", [])
+            try:
+                mx_id = self.store.add_mx(vid,self.clean_numbers(d.values))
+                self.store.replace_mx_parts(mx_id, parts)
+            except Exception as e:
+                messagebox.showerror(APP_NAME, str(e))
+                self.status_var.set(f"Error: {e}")
+                return
             self.selected_vehicle_id = vid
-            self.refresh_mx()
+            self.refresh_mx(); self.refresh_links()
             self.load_vehicle(vid)
-            self.status_var.set(f"Saved maintenance record. Total Vehicle MX records: {len(self.mx_rows)}")
+            self.status_var.set(f"Saved maintenance record with {len(parts)} part(s). Total Vehicle MX records: {len(self.mx_rows)}")
 
     def edit_mx(self):
         sel=self.mx.curselection()
         if not sel: return
         idx=sel[0]; row=self.mx_rows[idx]
-        d=EntryDialog(self.root,"Edit Maintenance Record",self.mx_fields(row))
+        existing_parts = [dict(p) for p in self.store.mx_parts(row["id"])]
+        d=MaintenanceDialog(self.root,"Edit Maintenance Record",self.mx_fields(row), existing_parts, supplier_rows=self.store.links(), technician_rows=self.store.technicians(False), default_technician_id=(self.store.default_technician()["id"] if self.store.default_technician() else None))
         if d.values is not None:
-            self.store.update_mx(row["id"], self.clean_numbers(d.values)); self.refresh_mx(); self.load_vehicle(self.selected_vehicle_id)
-            self.status_var.set("Updated maintenance record.")
+            parts = d.values.pop("structured_parts", [])
+            try:
+                self.store.update_mx(row["id"], self.clean_numbers(d.values))
+                self.store.replace_mx_parts(row["id"], parts)
+            except Exception as e:
+                messagebox.showerror(APP_NAME, str(e))
+                self.status_var.set(f"Error: {e}")
+                return
+            self.refresh_mx(); self.refresh_links(); self.load_vehicle(self.selected_vehicle_id)
+            self.status_var.set(f"Updated maintenance record with {len(parts)} part(s).")
 
     def delete_mx(self):
         sel=self.mx.curselection()
@@ -1353,12 +2276,17 @@ class App:
                 self.work.insert("end", f"{w['work_date']} - {main[:90]}{suffix}")
 
     def work_fields(self, row=None):
-        return [("work_date","Work date", (row["work_date"] if row else datetime.now().strftime("%Y-%m-%d"))), ("title","Title", (row["title"] if row else "")), ("category","Category", (row["category"] if row else "Shop/Fleet/Parts/Admin")), ("description","Description", (row["description"] if row else "")), ("parts","Parts/materials", (row["parts"] if row else "")), ("vendor","Vendor/supplier", (row["vendor"] if row else "")), ("cost","Cost", str(row["cost"] if row else "0")), ("labor_hours","Labor hours", str(row["labor_hours"] if row else "0")), ("hours","Equipment/shop hours", (row["hours"] if row else "")), ("notes","Notes", (row["notes"] if row else ""))]
+        return [("work_date","Work date (DD MMM YYYY)", (row["work_date"] if row else today_date())), ("title","Title", (row["title"] if row else "")), ("category","Category", (row["category"] if row else "Shop/Fleet/Parts/Admin")), ("description","Description", (row["description"] if row else "")), ("parts","Parts/materials", (row["parts"] if row else "")), ("vendor","Vendor/supplier", (row["vendor"] if row else "")), ("cost","Cost", str(row["cost"] if row else "0")), ("labor_hours","Labor hours", str(row["labor_hours"] if row else "0")), ("hours","Equipment/shop hours", (row["hours"] if row else "")), ("notes","Notes", (row["notes"] if row else ""))]
 
     def add_work(self):
         d=EntryDialog(self.root,"Add Unlinked Work", self.work_fields())
         if d.values is not None:
-            self.store.add_work(self.clean_numbers(d.values))
+            try:
+                self.store.add_work(self.clean_numbers(d.values))
+            except Exception as e:
+                messagebox.showerror(APP_NAME, str(e))
+                self.status_var.set(f"Error: {e}")
+                return
             self.refresh_work()
             self.status_var.set(f"Saved unlinked work record. Total Other Work records: {len(self.work_rows)}")
 
@@ -1368,7 +2296,13 @@ class App:
         idx=sel[0]; row=self.work_rows[idx]
         d=EntryDialog(self.root,"Edit Unlinked Work", self.work_fields(row))
         if d.values is not None:
-            self.store.update_work(row["id"], self.clean_numbers(d.values)); self.refresh_work()
+            try:
+                self.store.update_work(row["id"], self.clean_numbers(d.values))
+            except Exception as e:
+                messagebox.showerror(APP_NAME, str(e))
+                self.status_var.set(f"Error: {e}")
+                return
+            self.refresh_work()
             self.status_var.set("Updated unlinked work record.")
 
     def delete_work(self):
@@ -1429,13 +2363,18 @@ class App:
         if rows:
             total = 0.0
             for r in rows:
-                total += float(r["cost"] or 0)
-                lines.append(f"[{r['service_date']}] {r['parts']}")
-                lines.append(f"  Vendor/source: {r['vendor']}  Cost: ${float(r['cost'] or 0):.2f}")
+                total += float(r["total_cost"] or 0)
+                lines.append(f"[{r['service_date']}] {r['part_name']}  Part #: {r['part_number']}")
+                lines.append(f"  Supplier: {r['supplier']}  Ordered: {r['date_ordered']}  Qty: {float(r['quantity'] or 0):g}  Unit: ${float(r['unit_cost'] or 0):.2f}  Total: ${float(r['total_cost'] or 0):.2f}")
+                lines.append(f"  Technician: {r['technician_name']} — {r['technician_rank']} — ${float(r['technician_labor_rate'] or 0):.2f}/hr  Labor hrs: {float(r['labor_hours'] or 0):.2f}  Labor value: ${float(r['labor_value'] or 0):.2f}")
                 lines.append(f"  Work: {r['description']}")
+                if r['notes']:
+                    lines.append(f"  Notes: {r['notes']}")
                 lines.append(f"  Entered: {r['created_at']}")
                 lines.append("")
-            lines.append(f"Total parts/direct cost shown: ${total:.2f}")
+            labor_total = sum(float(r["labor_value"] or 0) for r in rows)
+            lines.append(f"Total structured parts cost shown: ${total:.2f}")
+            lines.append(f"Total itemized labor value shown: ${labor_total:.2f}")
         else:
             lines.append("No parts have been recorded for this vehicle yet.")
         self.set_info("\n".join(lines)+"\n")
@@ -1469,10 +2408,7 @@ class App:
             webbrowser.open(self.link_rows[sel[0]]["url"])
 
     def normalize_url(self, url):
-        url = (url or "").strip()
-        if url and not url.startswith(("http://", "https://")):
-            url = "https://" + url
-        return url
+        return normalize_url_text(url)
 
     def supplier_fields(self, row=None):
         row = row or {}
@@ -1508,15 +2444,17 @@ class App:
         if sel and messagebox.askyesno(APP_NAME,"Delete selected supplier/source?"): self.store.delete_link(self.link_rows[sel[0]]["id"]); self.refresh_links()
 
     def in_range(self, date_text, start, end):
-        d=(date_text or "")[:10]
-        return (not start or d >= start) and (not end or d <= end)
+        d = date_sort_key(date_text)
+        s = date_sort_key(start) if start else ""
+        e = date_sort_key(end) if end else ""
+        return (not s or d >= s) and (not e or d <= e)
 
     def vehicle_sort_name(self, v):
         return (v["nickname"] or " ".join(x for x in [v["year"], v["make"], v["model"]] if x) or v["vin"]).lower()
 
     def export_record(self):
         EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        d=EntryDialog(self.root,"Export Date Range (optional)", [("start","Start date YYYY-MM-DD", ""), ("end","End date YYYY-MM-DD", "")])
+        d=EntryDialog(self.root,"Export Date Range (optional)", [("start","Start date DD MMM YYYY", ""), ("end","End date DD MMM YYYY", "")])
         start=end=""
         if d.values:
             start=d.values.get("start",""); end=d.values.get("end","")
@@ -1534,15 +2472,42 @@ class App:
         date_stamp = datetime.now().strftime("%Y%m%d-%H%M")
         suffix = f"-{start or 'all'}-to-{end or 'all'}"
         txt=target/f"veh-mx-tracker-report-{date_stamp}{suffix}.txt"
-        p = self.store.profile()
+        default_tech = self.store.default_technician()
         totals = self.store.totals(start, end, None)
         lines=[]
         lines.append("VEH MX TRACKER EXPORT")
         lines.append(f"Exported: {nowstamp()}")
         lines.append(f"Date range: {start or 'all'} to {end or 'all'}")
         lines.append("="*90)
-        lines.append(f"User: {p['name']}    Rank: {p['rank']}    Labor rate: ${float(p['labor_cost'] or 0):.2f}/hr")
-        lines.append(f"Total records: {totals['records']}    Labor hours: {totals['labor_hours']:.2f}    Labor value: ${totals['labor_value']:.2f}    Direct costs: ${totals['direct_cost']:.2f}    Grand total: ${totals['grand_total']:.2f}")
+        lines.append(f"Default technician: {(default_tech['name'] if default_tech else 'None')}    Rank: {(default_tech['rank'] if default_tech else '')}    Labor rate: ${float(default_tech['labor_rate'] if default_tech else 0):.2f}/hr")
+        lines.append(f"Total records: {totals['records']}    Labor hours: {totals['labor_hours']:.2f}    Labor value: ${totals['labor_value']:.2f}    Parts total: ${totals['parts_cost']:.2f}    Other Work costs: ${totals['other_direct_cost']:.2f}    Grand total: ${totals['grand_total']:.2f}")
+        technicians = [dict(x) for x in self.store.technicians(include_inactive=True)]
+        lines += ["", "TECHNICIANS", "-"*90]
+        if technicians:
+            for tech in technicians:
+                state = "active" if int(tech.get('active') or 0) else "inactive"
+                marker = " [default]" if default_tech and tech.get('id') == default_tech['id'] else ""
+                lines.append(f"{tech['name']}{marker}")
+                lines.append(f"  Rank: {tech['rank']}  Labor rate: ${float(tech['labor_rate'] or 0):.2f}/hr  Status: {state}")
+                lines.append(f"  Created: {tech['created_at']}  Updated: {tech['updated_at']}")
+        else:
+            lines.append("None saved.")
+        all_parts = [dict(x) for x in self.store.structured_parts_all(start, end)]
+        lines += ["", "ALL ITEMIZED PARTS / LABOR", "-"*90]
+        if all_parts:
+            for ppart in all_parts:
+                vehicle = ppart['nickname'] or ' '.join(x for x in [ppart['year'], ppart['make'], ppart['model']] if x) or ppart['vin']
+                lines.append(f"[{ppart['service_date']}] {vehicle} | {ppart['part_name']}")
+                lines.append(f"  Maintenance: {ppart['description'] or ppart['category'] or '(blank record)'}")
+                lines.append(f"  Part #: {ppart['part_number']}  Supplier: {ppart['supplier']}  Ordered: {ppart['date_ordered']}")
+                lines.append(f"  Qty: {float(ppart['quantity'] or 0):g}  Unit: ${float(ppart['unit_cost'] or 0):.2f}  Part total: ${float(ppart['total_cost'] or 0):.2f}")
+                lines.append(f"  Technician: {ppart['technician_name']} — {ppart['technician_rank']} — ${float(ppart['technician_labor_rate'] or 0):.2f}/hr")
+                lines.append(f"  Labor hrs: {float(ppart['labor_hours'] or 0):.2f}  Labor value: ${float(ppart['labor_value'] or 0):.2f}")
+                if ppart['notes']:
+                    lines.append(f"  Notes: {ppart['notes']}")
+                lines.append("")
+        else:
+            lines.append("None in selected date range.")
         lines.append("="*90)
         for item in vehicles:
             v=item["vehicle"]
@@ -1559,9 +2524,20 @@ class App:
             lines += ["", "Maintenance Records:"]
             if item["maintenance"]:
                 for m in item["maintenance"]:
+                    part_rows = [dict(p) for p in self.store.mx_parts(m['id'])]
+                    parts_total = sum(float(p.get('total_cost') or 0) for p in part_rows)
+                    labor_total = sum(float(p.get('labor_value') or 0) for p in part_rows)
+                    labor_hours = sum(float(p.get('labor_hours') or 0) for p in part_rows)
                     lines.append(f"  [{m['service_date']}] {m['description'] or m['category'] or '(blank record)'}")
-                    lines.append(f"    Mileage: {m['mileage']}  Hours: {m['hours']}  Category: {m['category']}  Cost: ${float(m['cost'] or 0):.2f}  Labor hrs: {float(m['labor_hours'] or 0):.2f}")
-                    lines.append(f"    Parts: {m['parts']}  Vendor: {m['vendor']}  Next due: {m['next_due']}")
+                    lines.append(f"    Mileage: {m['mileage']}  Hours: {m['hours']}  Category: {m['category']}  Parts total: ${parts_total:.2f}  Labor hrs: {labor_hours:.2f}  Labor value: ${labor_total:.2f}")
+                    if part_rows:
+                        lines.append("    Itemized parts/labor:")
+                        for ppart in part_rows:
+                            lines.append(f"      - {ppart['part_name']}  Part #: {ppart['part_number']}  Supplier: {ppart['supplier']}  Ordered: {ppart['date_ordered']}  Qty: {float(ppart['quantity'] or 0):g}  Unit: ${float(ppart['unit_cost'] or 0):.2f}  Part total: ${float(ppart['total_cost'] or 0):.2f}")
+                            lines.append(f"        Technician: {ppart.get('technician_name','')} — {ppart.get('technician_rank','')} — ${float(ppart.get('technician_labor_rate') or 0):.2f}/hr  Labor hrs: {float(ppart.get('labor_hours') or 0):.2f}  Labor value: ${float(ppart.get('labor_value') or 0):.2f}")
+                    else:
+                        lines.append("    Itemized parts: none recorded")
+                    lines.append(f"    Next due: {m['next_due']}")
                     lines.append(f"    Created: {m['created_at']}  Updated: {m['updated_at']}")
             else:
                 lines.append("  None in selected date range.")
@@ -1596,8 +2572,8 @@ class App:
         else:
             lines.append("None saved.")
         txt.write_text("\n".join(lines)+"\n")
-        self.status_var.set(f"Exported TXT report to {target}")
-        messagebox.showinfo(APP_NAME, f"Exported TXT report:\n{txt}")
+        self.status_var.set(f"Exported one complete TXT report to {target}")
+        messagebox.showinfo(APP_NAME, f"Exported one complete TXT report:\n{txt}")
 
 
 def main():

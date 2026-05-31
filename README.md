@@ -18,17 +18,22 @@ All saved records are stored locally on the computer. Saved NHTSA information fo
 - Save, edit, and delete Vehicle MX records.
 - Save, edit, and delete Other Work records that are not tied to a vehicle.
 - Save blank or partial notes/work records when needed.
-- Track parts, vendor/source, direct cost, labor hours, mileage, equipment hours, and next due date.
+- Track service start date, optional service end date, mileage, equipment hours, category, description, and next due date.
+- Use strict `DD MMM YYYY` dates, such as `30 May 2026`, for maintenance dates, part-order dates, totals, and exports.
+- Add itemized parts/labor lines under each Vehicle MX record.
+- Track part name, part number, supplier/source, ordered date, quantity, unit cost, part total, labor hours, and line notes.
 - View all parts ever recorded for a selected vehicle.
 - Save custom Suppliers/Sources separately from vehicles.
 - Store supplier/source website, point of contact, role, email, phone, address/location, and notes.
+- Add supplier/source contact details while entering an itemized maintenance part.
 - Edit, delete, view, and open saved Suppliers/Sources later.
-- Store and edit user profile info: name, rank, and labor cost per hour.
-- Prompt for profile info on startup when profile fields are empty.
+- Store and edit technician profile info: name, rank, labor rate, active status, and default technician.
+- Prompt for technician/profile info on startup when profile fields are empty.
+- Snapshot technician name, rank, and labor rate on itemized parts/labor records.
 - Show total labor hours, labor value, direct costs, and grand total for the full profile.
 - Show totals for a selected vehicle.
 - Filter totals and exports by optional date range.
-- Export one clear `.txt` report.
+- Export one complete `.txt` report with technician profiles, all itemized parts/labor, vehicle records, notes, Other Work, and Suppliers/Sources.
 - Dashboard tab for due/overdue service, highest-cost vehicles, cost by category, most-used parts, and recurring issue trends.
 - Backup tab for one-click database backup and restore.
 - Quick Guide button for self-explanatory in-app instructions.
@@ -128,17 +133,19 @@ From the project folder, you can also run:
 python3 ./veh_mx_tracker.py
 ```
 
-### Fill out profile info
+### Fill out technician/profile info
 
-On first launch, the app prompts for profile info if anything is empty.
+On first launch, the app prompts for technician/profile info if anything is empty.
 
-Use **Edit Profile** at the top to update:
+Use **Technicians** at the top to add, edit, activate/deactivate, and choose a default technician. Each technician can store:
 
 - Name
 - Rank
-- Labor cost per hour
+- Labor rate per hour
+- Active status
+- Default technician status
 
-Labor cost is used to calculate labor value in totals and exports.
+Labor rate is used to calculate labor value in totals and exports. Itemized parts/labor records snapshot the selected technician name, rank, and labor rate so old records stay readable if the technician profile changes later.
 
 ### Add a vehicle by VIN
 
@@ -202,10 +209,30 @@ Use **Edit Selected Note** or **Delete Selected Note** to manage saved notes.
 1. Select a saved vehicle.
 2. Open the **Vehicle MX** tab.
 3. Click **Add Maintenance Record**.
-4. Enter any known fields, such as service date, mileage, hours, category, description, parts, vendor/source, cost, labor hours, and next due date.
+4. Enter any known fields, such as service start date, optional service end date, mileage, hours, category, description, and next due date.
 5. Click OK.
 
-Vehicle MX records can be edited or deleted later.
+Vehicle MX records can be edited or deleted later. Dates use `DD MMM YYYY`, such as `30 May 2026`.
+
+### Add itemized parts/labor to Vehicle MX records
+
+1. Select a saved vehicle.
+2. Open the **Vehicle MX** tab.
+3. Select a maintenance record.
+4. Click **Add Itemized Part / Labor**.
+5. Enter any known details:
+   - Part name
+   - Part number
+   - Supplier/source
+   - Date ordered
+   - Quantity
+   - Unit cost
+   - Technician
+   - Labor hours
+   - Notes
+6. Click OK.
+
+The app calculates part totals and labor value. Supplier/source contact fields entered from the itemized part dialog can also create or update a saved Supplier/Source record.
 
 ### View all parts for a vehicle
 
@@ -213,7 +240,7 @@ Vehicle MX records can be edited or deleted later.
 2. Open the **Vehicle MX** tab.
 3. Click **Show Vehicle Parts History**.
 
-The app shows all recorded parts for that selected vehicle, including dates, vendor/source, costs, and related work descriptions.
+The app shows all recorded itemized parts/labor for that selected vehicle, including dates, supplier/source, quantities, costs, technician details, labor hours, and related work descriptions.
 
 ### Add Other Work records
 
@@ -271,7 +298,7 @@ Open the **Backup** tab to make a local copy of the app database or restore from
 
 Click **Profile / Totals** at the top.
 
-You can enter optional start and end dates in `YYYY-MM-DD` format.
+You can enter optional start and end dates in `DD MMM YYYY` format, such as `30 May 2026`.
 
 Totals include:
 
@@ -289,15 +316,18 @@ Click **Export TXT**.
 
 You can enter an optional date range, then choose where to save the report. The folder chooser defaults to `~/Desktop/MaxxBuilds/veh-mx-tracker/veh-mx-exports` in this local checkout, but you can pick any folder.
 
-The app creates one clear `.txt` report sorted by vehicle. The report includes:
+The app creates one complete `.txt` report. The report includes:
 
-- Profile info
-- Total labor/cost summary
+- Export summary and totals
+- Technician profiles
+- All itemized maintenance parts/labor
 - Saved vehicles
+- Saved NHTSA vehicle info
 - Vehicle MX records
+- Itemized parts/labor under each MX record
 - Notes
 - Other Work records
-- Suppliers/Sources
+- Suppliers/Sources and contact details
 
 ### Clear all saved information
 
@@ -394,7 +424,7 @@ veh-mx-tracker
 
 ## Updating from GitHub
 
-On Linux, run the same copy/paste install command again. It downloads the current GitHub source archive, refreshes `~/Desktop/MaxxBuilds/veh-mx-tracker`, and reinstalls the app files. On Windows, use the latest successful Windows build artifact and run `install-windows.ps1` again if you want shortcuts refreshed. Saved database, settings, and exports live in the app-owned data locations listed above.
+On Linux, run the same copy/paste install command again. It downloads the current GitHub source archive, refreshes `~/Desktop/MaxxBuilds/veh-mx-tracker`, and reinstalls the app files. On Windows, download the latest ZIP from the GitHub release page and run `install-windows.ps1` again if you want shortcuts refreshed. Saved database, settings, and exports live in the app-owned data locations listed above.
 
 ## Uninstall
 
@@ -444,6 +474,7 @@ veh-mx-tracker.ico     Windows app icon
 build-windows.ps1      Windows x64 build script
 install-windows.ps1    Windows current-user installer/uninstaller
 Veh Mx Tracker.spec    PyInstaller build spec
+.github/workflows/     GitHub Actions workflow for building the Windows release asset
 ```
 
 ## License

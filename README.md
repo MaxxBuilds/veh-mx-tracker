@@ -64,33 +64,18 @@ sudo zypper --non-interactive refresh && sudo zypper --non-interactive install c
 
 ## Windows x64 install
 
-A Windows `.exe` is built automatically by GitHub Actions. Normal Windows users can use the prebuilt artifact instead of building the app manually.
+Windows users can download the prebuilt ZIP from the GitHub release page:
 
-To install on Windows:
+https://github.com/MaxxBuilds/veh-mx-tracker/releases/latest
 
-1. Open the repository **Actions** tab.
-2. Open the latest successful **Windows build** run.
-3. Download the `Veh-Mx-Tracker-Windows-x64` artifact.
-4. Extract the ZIP file.
-5. Run `Veh Mx Tracker.exe`.
+To find it from the repository page, open **Releases** on the right side of the GitHub page, then open the latest release.
 
-To install Start Menu and desktop shortcuts, run this from the extracted folder in PowerShell:
+1. Download `Veh-Mx-Tracker-Windows-x64.zip`.
+2. Extract the ZIP to your Desktop.
+3. Open the extracted folder.
+4. Run `Veh Mx Tracker.exe`.
 
-```powershell
-.\install-windows.ps1
-```
-
-To skip the desktop shortcut:
-
-```powershell
-.\install-windows.ps1 -NoDesktopShortcut
-```
-
-To uninstall the Windows app shortcuts and installed executable later:
-
-```powershell
-.\install-windows.ps1 -Uninstall
-```
+The ZIP also includes `install-windows.ps1` if you want Start Menu or desktop shortcuts.
 
 ## Build on Windows from source
 
